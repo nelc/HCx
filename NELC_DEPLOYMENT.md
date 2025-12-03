@@ -59,15 +59,22 @@ connectionString: process.env.DATABASE_URL
 
 ## 📦 Organization Secrets
 
-The nelc organization has these secrets pre-configured:
-- `DB_USER` - Database username
-- `DB_PASS` - Database password  
-- `DB_NAME` - Database name
+### GitHub Secrets (Repository/Organization Level)
+The nelc organization needs to configure these in GitHub:
+- `GCP_PROJECT_ID` - GCP project ID
+- `WIF_PROVIDER` - Workload Identity Federation provider
+- `WIF_SERVICE_ACCOUNT` - Service account for GitHub Actions
 - `INSTANCE_CONNECTION_NAME` - Cloud SQL instance connection
-- `JWT_SECRET` - JWT signing key
-- `OPENAI_API_KEY` - OpenAI API access
 
-**You don't need to create these yourself!** The organization manages them.
+### GCP Secret Manager Secrets
+These secrets should exist in GCP Secret Manager:
+- `hrx-db-user` - Database username
+- `hrx-db-pass` - Database password  
+- `hrx-db-name` - Database name
+- `hrx-jwt-secret` - JWT signing key
+- `hrx-openai-key` - OpenAI API access
+
+**Note**: If these aren't configured yet, contact the nelc organization administrator to set them up.
 
 ## 🔄 Development Workflow
 
