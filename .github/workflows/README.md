@@ -2,7 +2,7 @@
 
 ## Deploy to Cloud Run Workflow
 
-This workflow automatically builds and deploys the HRx application to Google Cloud Run whenever code is pushed to the `main` branch.
+This workflow automatically builds and deploys the HCx application to Google Cloud Run whenever code is pushed to the `main` branch.
 
 ### Required Organization Secrets
 

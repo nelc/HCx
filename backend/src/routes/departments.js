@@ -5,33 +5,85 @@ const { authenticate, isAdmin, isTrainingOfficer } = require('../middleware/auth
 
 const router = express.Router();
 
-// Get all departments
+// Helper function to ensure type column exists
+async function ensureTypeColumn() {
+  try {
+    const columnCheck = await db.query(`
+      SELECT column_name, column_default, is_nullable
+      FROM information_schema.columns 
+      WHERE table_name = 'departments' AND column_name = 'type'
+    `);
+    
+    if (columnCheck.rows.length === 0) {
+      // Column doesn't exist, add it
+      await db.query(`
+        ALTER TABLE departments
+        ADD COLUMN type VARCHAR(20) DEFAULT 'department'
+      `);
+      // Add check constraint separately
+      try {
+        await db.query(`
+          ALTER TABLE departments
+          ADD CONSTRAINT departments_type_check 
+          CHECK (type IN ('sector', 'department', 'section'))
+        `);
+      } catch (constraintError) {
+        // Constraint might already exist or fail, that's okay
+        console.warn('Could not add type constraint:', constraintError.message);
+      }
+      // Update existing records
+      await db.query(`UPDATE departments SET type = 'department' WHERE type IS NULL`);
+      console.log('✓ Added type column to departments table');
+      return true;
+    } else {
+      // Column exists, ensure existing records have a type
+      await db.query(`UPDATE departments SET type = 'department' WHERE type IS NULL`);
+      return false;
+    }
+  } catch (error) {
+    console.error('Migration check error:', error.message);
+    console.error('Stack:', error.stack);
+    // Don't fail the request if migration check fails
+    return false;
+  }
+}
+
+// Get all departments with hierarchy
 router.get('/', authenticate, async (req, res) => {
   try {
+    await ensureTypeColumn();
+
     const result = await db.query(`
       SELECT d.*, 
-             p.name_ar as parent_name_ar, 
-             p.name_en as parent_name_en,
+             p.name_ar as parent_name_ar,
+             p.type as parent_type,
              (SELECT COUNT(*) FROM users WHERE department_id = d.id) as employee_count
       FROM departments d
       LEFT JOIN departments p ON d.parent_id = p.id
-      ORDER BY d.name_ar
+      ORDER BY COALESCE(d.type, 'department'), d.name_ar
     `);
     
     res.json(result.rows);
   } catch (error) {
     console.error('Get departments error:', error);
-    res.status(500).json({ error: 'Failed to get departments' });
+    console.error('Error details:', error.message);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      error: 'Failed to get departments',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
 // Get single department
 router.get('/:id', authenticate, async (req, res) => {
   try {
+    await ensureTypeColumn();
+
     const result = await db.query(`
       SELECT d.*, 
-             p.name_ar as parent_name_ar, 
-             p.name_en as parent_name_en,
+             p.name_ar as parent_name_ar,
+             p.type as parent_type,
              (SELECT COUNT(*) FROM users WHERE department_id = d.id) as employee_count
       FROM departments d
       LEFT JOIN departments p ON d.parent_id = p.id
@@ -45,60 +97,377 @@ router.get('/:id', authenticate, async (req, res) => {
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Get department error:', error);
-    res.status(500).json({ error: 'Failed to get department' });
+    console.error('Error details:', error.message);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      error: 'Failed to get department',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
 // Create department
 router.post('/', authenticate, isAdmin, [
-  body('name_ar').notEmpty(),
-  body('name_en').notEmpty()
+  body('name_ar').notEmpty().withMessage('Arabic name is required').trim(),
+  body('type').isIn(['sector', 'department', 'section']).withMessage('Invalid type')
 ], async (req, res) => {
   try {
+    console.log('Create department request received:', {
+      name_ar: req.body.name_ar,
+      type: req.body.type,
+      parent_id: req.body.parent_id,
+      user: req.user?.email
+    });
+
+    // Ensure type column exists
+    try {
+      const typeColumnAdded = await ensureTypeColumn();
+      if (typeColumnAdded) {
+        console.log('Type column was added to departments table');
+      }
+    } catch (migrationError) {
+      console.error('Warning: Type column migration failed:', migrationError.message);
+      // Continue anyway - column might already exist
+    }
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      console.log('Validation errors:', errors.array());
+      return res.status(400).json({ 
+        error: errors.array()[0].msg || 'Validation failed',
+        errors: errors.array()
+      });
     }
     
-    const { name_ar, name_en, description_ar, description_en, parent_id } = req.body;
+    let { name_ar, type, parent_id } = req.body;
     
-    const result = await db.query(`
-      INSERT INTO departments (name_ar, name_en, description_ar, description_en, parent_id)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING *
-    `, [name_ar, name_en, description_ar, description_en, parent_id]);
+    // Validate type
+    if (!type || !['sector', 'department', 'section'].includes(type)) {
+      return res.status(400).json({ error: 'Invalid type. Must be sector, department, or section' });
+    }
+    
+    // Normalize parent_id: convert empty string to null
+    if (parent_id === '' || parent_id === undefined || parent_id === null) {
+      parent_id = null;
+    } else if (typeof parent_id === 'string' && parent_id.trim() === '') {
+      parent_id = null;
+    }
+    
+    // Validate parent_id format if provided (should be UUID)
+    if (parent_id !== null) {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(parent_id)) {
+        return res.status(400).json({ error: 'Invalid parent ID format' });
+      }
+    }
+    
+    // Trim name_ar
+    if (!name_ar || typeof name_ar !== 'string') {
+      return res.status(400).json({ error: 'Arabic name is required and must be a string' });
+    }
+    name_ar = name_ar.trim();
+    if (!name_ar) {
+      return res.status(400).json({ error: 'Arabic name cannot be empty' });
+    }
+    
+    // Validate hierarchy rules
+    if (type === 'sector') {
+      if (parent_id) {
+        return res.status(400).json({ error: 'Sector cannot have a parent' });
+      }
+    } else if (type === 'department') {
+      if (!parent_id) {
+        return res.status(400).json({ error: 'Department must be assigned to a sector' });
+      }
+      // Verify parent exists and is a sector
+      const parent = await db.query('SELECT type, name_ar FROM departments WHERE id = $1', [parent_id]);
+      if (parent.rows.length === 0) {
+        return res.status(400).json({ error: 'Parent sector not found' });
+      }
+      const parentType = parent.rows[0].type;
+      // Handle case where type might be NULL (old records)
+      if (!parentType) {
+        // If type is NULL, we can't verify, so we'll allow it but log a warning
+        console.warn(`Parent department ${parent_id} has NULL type. Allowing creation but this should be fixed.`);
+      } else if (parentType !== 'sector') {
+        return res.status(400).json({ 
+          error: `Department must be assigned to a sector. Selected parent is a ${parentType}.` 
+        });
+      }
+    } else if (type === 'section') {
+      if (!parent_id) {
+        return res.status(400).json({ error: 'Section must be assigned to a department' });
+      }
+      // Verify parent exists and is a department
+      const parent = await db.query('SELECT type, name_ar FROM departments WHERE id = $1', [parent_id]);
+      if (parent.rows.length === 0) {
+        return res.status(400).json({ error: 'Parent department not found' });
+      }
+      const parentType = parent.rows[0].type;
+      // Handle case where type might be NULL (old records)
+      if (!parentType) {
+        // If type is NULL, we can't verify, so we'll allow it but log a warning
+        console.warn(`Parent department ${parent_id} has NULL type. Allowing creation but this should be fixed.`);
+      } else if (parentType !== 'department') {
+        return res.status(400).json({ 
+          error: `Section must be assigned to a department. Selected parent is a ${parentType}.` 
+        });
+      }
+    }
+    
+    // Check for duplicate name in same parent
+    let duplicateCheck;
+    if (type === 'sector') {
+      duplicateCheck = await db.query(
+        'SELECT id FROM departments WHERE name_ar = $1 AND type = $2 AND parent_id IS NULL',
+        [name_ar, type]
+      );
+    } else {
+      duplicateCheck = await db.query(
+        'SELECT id FROM departments WHERE name_ar = $1 AND type = $2 AND parent_id = $3',
+        [name_ar, type, parent_id]
+      );
+    }
+    if (duplicateCheck.rows.length > 0) {
+      return res.status(400).json({ error: 'Item with this name already exists in the same parent' });
+    }
+    
+    // Insert the department
+    let result;
+    try {
+      console.log('Attempting to insert department:', { name_ar, type, parent_id });
+      
+      // Verify table structure exists (at minimum we need name_ar, type is optional but preferred)
+      const tableCheck = await db.query(`
+        SELECT column_name, data_type 
+        FROM information_schema.columns 
+        WHERE table_name = 'departments' 
+        AND column_name IN ('name_ar', 'type', 'parent_id')
+      `);
+      
+      const foundColumns = tableCheck.rows.map(r => r.column_name);
+      console.log('Found columns in departments table:', foundColumns);
+      
+      if (!foundColumns.includes('name_ar')) {
+        console.error('Table structure issue. Missing name_ar column. Found columns:', foundColumns);
+        return res.status(500).json({ 
+          error: 'Database table structure issue. Missing name_ar column.',
+          message: 'Please run database migrations to update the table structure'
+        });
+      }
+      
+      // If type column doesn't exist, it will be added by ensureTypeColumn, but let's handle it gracefully
+      if (!foundColumns.includes('type')) {
+        console.warn('Type column not found, but should have been added by ensureTypeColumn');
+      }
+      
+      // Simple INSERT - type column should exist after ensureTypeColumn
+      result = await db.query(`
+        INSERT INTO departments (name_ar, type, parent_id)
+        VALUES ($1, $2, $3)
+        RETURNING *
+      `, [name_ar, type, parent_id]);
+      console.log('Department created successfully:', result.rows[0].id);
+    } catch (dbError) {
+      console.error('Database error during insert:', {
+        code: dbError.code,
+        message: dbError.message,
+        detail: dbError.detail,
+        hint: dbError.hint,
+        constraint: dbError.constraint,
+        table: dbError.table,
+        column: dbError.column,
+        stack: dbError.stack
+      });
+      
+      // Handle database constraint errors
+      if (dbError.code === '23505') { // Unique violation
+        return res.status(400).json({ error: 'Item with this name already exists in the same parent' });
+      }
+      if (dbError.code === '23503') { // Foreign key violation
+        return res.status(400).json({ error: 'Invalid parent reference' });
+      }
+      if (dbError.code === '23514') { // Check constraint violation
+        const constraintName = dbError.constraint;
+        if (constraintName === 'sectors_no_parent') {
+          return res.status(400).json({ error: 'Sector cannot have a parent' });
+        }
+        if (constraintName === 'departments_require_parent') {
+          return res.status(400).json({ error: 'Department must be assigned to a sector' });
+        }
+        if (constraintName === 'sections_require_parent') {
+          return res.status(400).json({ error: 'Section must be assigned to a department' });
+        }
+        return res.status(400).json({ 
+          error: 'Invalid hierarchy: ' + (dbError.message || 'Constraint violation'),
+          constraint: constraintName,
+          detail: dbError.detail
+        });
+      }
+      // Handle column doesn't exist error
+      if (dbError.code === '42703') { // Undefined column
+        return res.status(500).json({ 
+          error: 'Database schema issue: Column does not exist',
+          message: dbError.message,
+          hint: 'Please run database migrations to update the table structure'
+        });
+      }
+      // Re-throw if it's not a constraint error
+      throw dbError;
+    }
     
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Create department error:', error);
-    res.status(500).json({ error: 'Failed to create department' });
+    console.error('Error code:', error.code);
+    console.error('Error details:', error.message);
+    console.error('Error constraint:', error.constraint);
+    console.error('Error stack:', error.stack);
+    
+    // Handle database constraint errors (fallback)
+    if (error.code === '23505') { // Unique violation
+      return res.status(400).json({ error: 'Item with this name already exists' });
+    }
+    if (error.code === '23503') { // Foreign key violation
+      return res.status(400).json({ error: 'Invalid parent reference' });
+    }
+    if (error.code === '23514') { // Check constraint violation
+      return res.status(400).json({ error: 'Invalid hierarchy structure' });
+    }
+    
+    // Always return detailed error in development
+    const isDevelopment = process.env.NODE_ENV !== 'production';
+    res.status(500).json({ 
+      error: 'Failed to create department',
+      message: isDevelopment ? error.message : 'An error occurred while creating the department',
+      code: isDevelopment ? error.code : undefined,
+      constraint: isDevelopment ? error.constraint : undefined,
+      detail: isDevelopment ? error.detail : undefined,
+      hint: isDevelopment ? error.hint : undefined
+    });
   }
 });
 
 // Update department
-router.put('/:id', authenticate, isAdmin, async (req, res) => {
+router.put('/:id', authenticate, isAdmin, [
+  body('name_ar').optional().trim().notEmpty().withMessage('Arabic name cannot be empty')
+], async (req, res) => {
   try {
-    const { name_ar, name_en, description_ar, description_en, parent_id } = req.body;
+    await ensureTypeColumn();
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        error: errors.array()[0].msg || 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    let { name_ar, type, parent_id } = req.body;
+    
+    // Get current department
+    const current = await db.query('SELECT * FROM departments WHERE id = $1', [req.params.id]);
+    if (current.rows.length === 0) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+    
+    const currentType = type || current.rows[0].type || 'department';
+    
+    // Normalize parent_id: convert empty string to null
+    let currentParentId;
+    if (parent_id !== undefined) {
+      currentParentId = (parent_id === '' || parent_id === null) ? null : parent_id;
+    } else {
+      currentParentId = current.rows[0].parent_id;
+    }
+    
+    // Trim name_ar if provided
+    if (name_ar !== undefined) {
+      name_ar = name_ar.trim();
+      if (!name_ar) {
+        return res.status(400).json({ error: 'Arabic name cannot be empty' });
+      }
+    } else {
+      name_ar = current.rows[0].name_ar;
+    }
+    
+    // Validate hierarchy rules
+    if (currentType === 'sector') {
+      if (currentParentId) {
+        return res.status(400).json({ error: 'Sector cannot have a parent' });
+      }
+    } else if (currentType === 'department') {
+      if (!currentParentId) {
+        return res.status(400).json({ error: 'Department must be assigned to a sector' });
+      }
+      // Verify parent is a sector
+      const parent = await db.query('SELECT type FROM departments WHERE id = $1', [currentParentId]);
+      if (parent.rows.length === 0) {
+        return res.status(400).json({ error: 'Parent sector not found' });
+      }
+      const parentType = parent.rows[0].type;
+      if (!parentType || parentType !== 'sector') {
+        return res.status(400).json({ error: 'Department must be assigned to a sector' });
+      }
+    } else if (currentType === 'section') {
+      if (!currentParentId) {
+        return res.status(400).json({ error: 'Section must be assigned to a department' });
+      }
+      // Verify parent is a department
+      const parent = await db.query('SELECT type FROM departments WHERE id = $1', [currentParentId]);
+      if (parent.rows.length === 0) {
+        return res.status(400).json({ error: 'Parent department not found' });
+      }
+      const parentType = parent.rows[0].type;
+      if (!parentType || parentType !== 'department') {
+        return res.status(400).json({ error: 'Section must be assigned to a department' });
+      }
+    }
+    
+    // Check for duplicate name (excluding current item)
+    let duplicateCheck;
+    if (currentType === 'sector') {
+      duplicateCheck = await db.query(
+        'SELECT id FROM departments WHERE name_ar = $1 AND type = $2 AND parent_id IS NULL AND id != $3',
+        [name_ar, currentType, req.params.id]
+      );
+    } else {
+      duplicateCheck = await db.query(
+        'SELECT id FROM departments WHERE name_ar = $1 AND type = $2 AND parent_id = $3 AND id != $4',
+        [name_ar, currentType, currentParentId, req.params.id]
+      );
+    }
+    if (duplicateCheck.rows.length > 0) {
+      return res.status(400).json({ error: 'Item with this name already exists in the same parent' });
+    }
     
     const result = await db.query(`
       UPDATE departments
-      SET name_ar = COALESCE($1, name_ar),
-          name_en = COALESCE($2, name_en),
-          description_ar = COALESCE($3, description_ar),
-          description_en = COALESCE($4, description_en),
-          parent_id = $5
-      WHERE id = $6
+      SET name_ar = $1,
+          type = $2,
+          parent_id = $3
+      WHERE id = $4
       RETURNING *
-    `, [name_ar, name_en, description_ar, description_en, parent_id, req.params.id]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Department not found' });
-    }
+    `, [name_ar, currentType, currentParentId, req.params.id]);
     
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Update department error:', error);
-    res.status(500).json({ error: 'Failed to update department' });
+    console.error('Error details:', error.message);
+    console.error('Error stack:', error.stack);
+    
+    // Handle database constraint errors
+    if (error.code === '23505') { // Unique violation
+      return res.status(400).json({ error: 'Item with this name already exists' });
+    }
+    if (error.code === '23503') { // Foreign key violation
+      return res.status(400).json({ error: 'Invalid parent reference' });
+    }
+    
+    res.status(500).json({ 
+      error: 'Failed to update department',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
@@ -108,19 +477,25 @@ router.delete('/:id', authenticate, isAdmin, async (req, res) => {
     // Check if department has users
     const userCheck = await db.query('SELECT id FROM users WHERE department_id = $1 LIMIT 1', [req.params.id]);
     if (userCheck.rows.length > 0) {
-      return res.status(400).json({ error: 'Cannot delete department with assigned users' });
+      return res.status(400).json({ error: 'Cannot delete with assigned users' });
+    }
+    
+    // Check if department has children
+    const childCheck = await db.query('SELECT id FROM departments WHERE parent_id = $1 LIMIT 1', [req.params.id]);
+    if (childCheck.rows.length > 0) {
+      return res.status(400).json({ error: 'Cannot delete with child items' });
     }
     
     const result = await db.query('DELETE FROM departments WHERE id = $1 RETURNING id', [req.params.id]);
     
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Department not found' });
+      return res.status(404).json({ error: 'Item not found' });
     }
     
-    res.json({ message: 'Department deleted successfully' });
+    res.json({ message: 'Deleted successfully' });
   } catch (error) {
     console.error('Delete department error:', error);
-    res.status(500).json({ error: 'Failed to delete department' });
+    res.status(500).json({ error: 'Failed to delete' });
   }
 });
 

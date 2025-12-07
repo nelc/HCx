@@ -16,14 +16,16 @@ async function seed() {
     
     // Create departments
     console.log('📁 Creating departments...');
+    // NOTE: Top-level departments are created as "sectors" so they can have NULL parent_id
+    // to satisfy the hierarchical constraints in schema.sql
     const departments = await client.query(`
-      INSERT INTO departments (name_ar, name_en, description_ar, description_en)
+      INSERT INTO departments (name_ar, name_en, description_ar, description_en, type, parent_id)
       VALUES 
-        ('الموارد البشرية', 'Human Resources', 'إدارة شؤون الموظفين والتطوير', 'Employee affairs and development management'),
-        ('تقنية المعلومات', 'Information Technology', 'إدارة الأنظمة والبنية التحتية التقنية', 'Systems and IT infrastructure management'),
-        ('المالية', 'Finance', 'إدارة الشؤون المالية والميزانيات', 'Financial affairs and budgets management'),
-        ('التسويق', 'Marketing', 'إدارة التسويق والعلاقات العامة', 'Marketing and public relations management'),
-        ('العمليات', 'Operations', 'إدارة العمليات التشغيلية', 'Operational management')
+        ('الموارد البشرية', 'Human Resources', 'إدارة شؤون الموظفين والتطوير', 'Employee affairs and development management', 'sector', NULL),
+        ('تقنية المعلومات', 'Information Technology', 'إدارة الأنظمة والبنية التحتية التقنية', 'Systems and IT infrastructure management', 'sector', NULL),
+        ('المالية', 'Finance', 'إدارة الشؤون المالية والميزانيات', 'Financial affairs and budgets management', 'sector', NULL),
+        ('التسويق', 'Marketing', 'إدارة التسويق والعلاقات العامة', 'Marketing and public relations management', 'sector', NULL),
+        ('العمليات', 'Operations', 'إدارة العمليات التشغيلية', 'Operational management', 'sector', NULL)
       RETURNING id, name_en
     `);
     

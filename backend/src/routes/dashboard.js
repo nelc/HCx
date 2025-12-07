@@ -10,12 +10,12 @@ router.get('/center', authenticate, isTrainingOfficer, async (req, res) => {
     // Overall statistics
     const stats = await db.query(`
       SELECT
-        (SELECT COUNT(*) FROM users WHERE role = 'employee' AND is_active = true) as total_employees,
-        (SELECT COUNT(*) FROM tests WHERE status = 'published') as active_tests,
-        (SELECT COUNT(*) FROM test_assignments) as total_assignments,
-        (SELECT COUNT(*) FROM test_assignments WHERE status = 'completed') as completed_assignments,
-        (SELECT COUNT(*) FROM analysis_results) as analyzed_count,
-        (SELECT COUNT(*) FROM training_recommendations) as total_recommendations
+        COALESCE((SELECT COUNT(*) FROM users WHERE role = 'employee' AND is_active = true), 0) as total_employees,
+        COALESCE((SELECT COUNT(*) FROM tests WHERE status = 'published'), 0) as active_tests,
+        COALESCE((SELECT COUNT(*) FROM test_assignments), 0) as total_assignments,
+        COALESCE((SELECT COUNT(*) FROM test_assignments WHERE status = 'completed'), 0) as completed_assignments,
+        COALESCE((SELECT COUNT(*) FROM analysis_results), 0) as analyzed_count,
+        COALESCE((SELECT COUNT(*) FROM training_recommendations), 0) as total_recommendations
     `);
     
     // Participation rate by department
@@ -207,12 +207,12 @@ router.get('/employee', authenticate, async (req, res) => {
     // My statistics
     const stats = await db.query(`
       SELECT
-        (SELECT COUNT(*) FROM test_assignments WHERE user_id = $1) as total_assignments,
-        (SELECT COUNT(*) FROM test_assignments WHERE user_id = $1 AND status = 'completed') as completed_count,
-        (SELECT COUNT(*) FROM test_assignments WHERE user_id = $1 AND status = 'pending') as pending_count,
-        (SELECT ROUND(AVG(overall_score), 1) FROM analysis_results WHERE user_id = $1) as avg_score,
-        (SELECT COUNT(*) FROM training_recommendations WHERE user_id = $1) as total_recommendations,
-        (SELECT COUNT(*) FROM training_recommendations WHERE user_id = $1 AND status = 'completed') as completed_recommendations
+        COALESCE((SELECT COUNT(*) FROM test_assignments WHERE user_id = $1), 0) as total_assignments,
+        COALESCE((SELECT COUNT(*) FROM test_assignments WHERE user_id = $1 AND status = 'completed'), 0) as completed_count,
+        COALESCE((SELECT COUNT(*) FROM test_assignments WHERE user_id = $1 AND status = 'pending'), 0) as pending_count,
+        COALESCE((SELECT ROUND(AVG(overall_score), 1) FROM analysis_results WHERE user_id = $1), 0) as avg_score,
+        COALESCE((SELECT COUNT(*) FROM training_recommendations WHERE user_id = $1), 0) as total_recommendations,
+        COALESCE((SELECT COUNT(*) FROM training_recommendations WHERE user_id = $1 AND status = 'completed'), 0) as completed_recommendations
     `, [userId]);
     
     // Pending assignments
@@ -235,7 +235,7 @@ router.get('/employee', authenticate, async (req, res) => {
       ORDER BY ta.due_date ASC NULLS LAST
     `, [userId]);
     
-    // My skill profile
+    // My skill profile (assessed skills)
     const skillProfile = await db.query(`
       SELECT 
         esp.*,
@@ -247,8 +247,32 @@ router.get('/employee', authenticate, async (req, res) => {
       FROM employee_skill_profiles esp
       JOIN skills s ON esp.skill_id = s.id
       JOIN training_domains td ON s.domain_id = td.id
-      WHERE esp.user_id = $1
-      ORDER BY esp.last_assessment_score ASC
+      WHERE esp.user_id = $1 AND esp.last_assessment_score IS NOT NULL AND esp.last_assessment_score > 0
+      ORDER BY esp.last_assessment_score DESC
+    `, [userId]);
+    
+    // Department-linked skills (all skills from domains linked to employee's department)
+    const departmentSkills = await db.query(`
+      SELECT DISTINCT
+        s.id as skill_id,
+        s.name_ar as skill_name_ar,
+        s.name_en as skill_name_en,
+        s.description_ar as skill_description_ar,
+        s.description_en as skill_description_en,
+        td.id as domain_id,
+        td.name_ar as domain_name_ar,
+        td.name_en as domain_name_en,
+        td.color as domain_color,
+        esp.last_assessment_score,
+        esp.current_level,
+        esp.last_assessment_date
+      FROM users u
+      INNER JOIN domain_departments dd ON u.department_id = dd.department_id
+      INNER JOIN training_domains td ON dd.domain_id = td.id
+      INNER JOIN skills s ON s.domain_id = td.id
+      LEFT JOIN employee_skill_profiles esp ON esp.skill_id = s.id AND esp.user_id = u.id
+      WHERE u.id = $1 AND td.is_active = true
+      ORDER BY td.name_ar, s.name_ar
     `, [userId]);
     
     // Recent results
@@ -291,6 +315,7 @@ router.get('/employee', authenticate, async (req, res) => {
       stats: stats.rows[0],
       pending_assignments: pendingAssignments.rows,
       skill_profile: skillProfile.rows,
+      department_skills: departmentSkills.rows,
       recent_results: recentResults.rows,
       recommendations: recommendations.rows
     });
@@ -323,6 +348,173 @@ router.get('/quick-stats', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Get quick stats error:', error);
     res.status(500).json({ error: 'Failed to get quick stats' });
+  }
+});
+
+// Get employee peer rankings
+router.get('/employee/rankings', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Get user's department and associated domains
+    const userInfo = await db.query(`
+      SELECT 
+        u.id,
+        u.department_id,
+        u.name_ar,
+        d.name_ar as department_name_ar,
+        d.name_en as department_name_en
+      FROM users u
+      LEFT JOIN departments d ON u.department_id = d.id
+      WHERE u.id = $1
+    `, [userId]);
+
+    if (userInfo.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userInfo.rows[0];
+    const departmentId = user.department_id;
+
+    // 1. DEPARTMENT RANKING
+    // Rank users in the same department by their average assessment score
+    const departmentRanking = await db.query(`
+      WITH user_scores AS (
+        SELECT 
+          u.id as user_id,
+          u.name_ar,
+          u.name_en,
+          ROUND(AVG(ar.overall_score), 1) as avg_score,
+          COUNT(ar.id) as assessment_count
+        FROM users u
+        LEFT JOIN analysis_results ar ON ar.user_id = u.id
+        WHERE u.department_id = $1 
+          AND u.role = 'employee' 
+          AND u.is_active = true
+        GROUP BY u.id, u.name_ar, u.name_en
+        HAVING COUNT(ar.id) > 0
+      ),
+      ranked_users AS (
+        SELECT 
+          *,
+          ROW_NUMBER() OVER (ORDER BY avg_score DESC, assessment_count DESC) as rank,
+          COUNT(*) OVER () as total_peers
+        FROM user_scores
+      )
+      SELECT * FROM ranked_users
+      WHERE user_id = $2
+    `, [departmentId, userId]);
+
+    // 2. DOMAIN RANKINGS
+    // Get rankings for each domain linked to user's department
+    const domainRankings = await db.query(`
+      WITH user_domain_scores AS (
+        SELECT 
+          u.id as user_id,
+          u.name_ar,
+          td.id as domain_id,
+          td.name_ar as domain_name_ar,
+          td.name_en as domain_name_en,
+          td.color as domain_color,
+          ROUND(AVG(esp.last_assessment_score), 1) as avg_domain_score,
+          COUNT(DISTINCT esp.skill_id) as skills_assessed
+        FROM users u
+        INNER JOIN domain_departments dd ON u.department_id = dd.department_id
+        INNER JOIN training_domains td ON dd.domain_id = td.id
+        INNER JOIN skills s ON s.domain_id = td.id
+        INNER JOIN employee_skill_profiles esp ON esp.skill_id = s.id AND esp.user_id = u.id
+        WHERE dd.department_id = $1 
+          AND u.role = 'employee' 
+          AND u.is_active = true
+          AND esp.last_assessment_score IS NOT NULL
+        GROUP BY u.id, u.name_ar, td.id, td.name_ar, td.name_en, td.color
+      ),
+      domain_ranked AS (
+        SELECT 
+          *,
+          ROW_NUMBER() OVER (PARTITION BY domain_id ORDER BY avg_domain_score DESC, skills_assessed DESC) as domain_rank,
+          COUNT(*) OVER (PARTITION BY domain_id) as total_in_domain
+        FROM user_domain_scores
+      )
+      SELECT * FROM domain_ranked
+      WHERE user_id = $2
+      ORDER BY avg_domain_score DESC
+    `, [departmentId, userId]);
+
+    // 3. SKILL RANKINGS
+    // Get rankings for individual skills
+    const skillRankings = await db.query(`
+      WITH skill_scores AS (
+        SELECT 
+          esp.user_id,
+          esp.skill_id,
+          s.name_ar as skill_name_ar,
+          s.name_en as skill_name_en,
+          td.name_ar as domain_name_ar,
+          td.color as domain_color,
+          esp.last_assessment_score,
+          esp.current_level
+        FROM employee_skill_profiles esp
+        INNER JOIN skills s ON s.id = esp.skill_id
+        INNER JOIN training_domains td ON s.domain_id = td.id
+        INNER JOIN users u ON esp.user_id = u.id
+        INNER JOIN domain_departments dd ON u.department_id = dd.department_id AND dd.domain_id = td.id
+        WHERE u.department_id = $1 
+          AND u.role = 'employee' 
+          AND u.is_active = true
+          AND esp.last_assessment_score IS NOT NULL
+      ),
+      skill_ranked AS (
+        SELECT 
+          *,
+          ROW_NUMBER() OVER (PARTITION BY skill_id ORDER BY last_assessment_score DESC) as skill_rank,
+          COUNT(*) OVER (PARTITION BY skill_id) as total_assessed
+        FROM skill_scores
+      )
+      SELECT * FROM skill_ranked
+      WHERE user_id = $2
+      ORDER BY last_assessment_score DESC
+      LIMIT 10
+    `, [departmentId, userId]);
+
+    // 4. OVERALL RANK (across all employees in the organization)
+    const overallRanking = await db.query(`
+      WITH all_user_scores AS (
+        SELECT 
+          u.id as user_id,
+          u.name_ar,
+          ROUND(AVG(ar.overall_score), 1) as avg_score,
+          COUNT(ar.id) as assessment_count
+        FROM users u
+        LEFT JOIN analysis_results ar ON ar.user_id = u.id
+        WHERE u.role = 'employee' AND u.is_active = true
+        GROUP BY u.id, u.name_ar
+        HAVING COUNT(ar.id) > 0
+      ),
+      ranked_all AS (
+        SELECT 
+          *,
+          ROW_NUMBER() OVER (ORDER BY avg_score DESC, assessment_count DESC) as overall_rank,
+          COUNT(*) OVER () as total_employees
+        FROM all_user_scores
+      )
+      SELECT * FROM ranked_all
+      WHERE user_id = $1
+    `, [userId]);
+
+    res.json({
+      department_ranking: departmentRanking.rows[0] || null,
+      domain_rankings: domainRankings.rows || [],
+      skill_rankings: skillRankings.rows || [],
+      overall_ranking: overallRanking.rows[0] || null,
+      user_info: {
+        name_ar: user.name_ar,
+        department_name_ar: user.department_name_ar
+      }
+    });
+  } catch (error) {
+    console.error('Get employee rankings error:', error);
+    res.status(500).json({ error: 'Failed to get employee rankings' });
   }
 });
 

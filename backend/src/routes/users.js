@@ -1,10 +1,50 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const multer = require('multer');
+const { parse } = require('csv-parse/sync');
 const { body, validationResult } = require('express-validator');
 const db = require('../db');
 const { authenticate, isAdmin, isTrainingOfficer } = require('../middleware/auth');
 
 const router = express.Router();
+
+// Configure multer for CSV uploads
+const csvUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 2 * 1024 * 1024, // 2MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedMimes = [
+      'text/csv',
+      'application/vnd.ms-excel',
+      'text/plain',
+    ];
+    const ext = file.originalname.split('.').pop().toLowerCase();
+
+    if (allowedMimes.includes(file.mimetype) || ext === 'csv') {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only CSV files are allowed.'), false);
+    }
+  },
+});
+
+// Multer error handler middleware for CSV uploads
+const csvUploadErrorHandler = (err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    console.error('CSV Multer error:', err.code, err.message);
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'حجم الملف أكبر من المسموح (٢ ميغابايت)' });
+    }
+    return res.status(400).json({ error: 'خطأ في رفع الملف', message: err.message });
+  }
+  if (err) {
+    console.error('CSV upload error:', err.message);
+    return res.status(400).json({ error: 'خطأ في رفع الملف', message: err.message });
+  }
+  next();
+};
 
 // Get all users
 router.get('/', authenticate, isTrainingOfficer, async (req, res) => {
@@ -67,6 +107,215 @@ router.get('/', authenticate, isTrainingOfficer, async (req, res) => {
     res.status(500).json({ error: 'Failed to get users' });
   }
 });
+
+// Bulk upload users from CSV (Admin only)
+// Expected columns (Arabic headers):
+// "الرقم الوظيفي","الاسم بالعربية","الايميل","الدور","القسم","المسمى الوظيفي"
+router.post(
+  '/bulk-upload',
+  authenticate,
+  isAdmin,
+  csvUpload.single('file'),
+  csvUploadErrorHandler,
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'لم يتم تحميل ملف CSV' });
+      }
+
+      const csvText = req.file.buffer.toString('utf8');
+
+      let rows;
+      try {
+        rows = parse(csvText, {
+          columns: true,
+          skip_empty_lines: true,
+          trim: true,
+        });
+      } catch (err) {
+        console.error('CSV parse error:', err);
+        return res.status(400).json({
+          error: 'صيغة الملف غير صحيحة',
+          message: 'تأكد من أن الملف بصيغة CSV وأن الصف الأول يحتوي على العناوين المطلوبة',
+        });
+      }
+
+      if (!rows || rows.length === 0) {
+        return res.status(400).json({ error: 'الملف لا يحتوي على بيانات' });
+      }
+
+      // Load departments once and build lookup by Arabic and English names
+      const departmentsResult = await db.query(
+        'SELECT id, name_ar, name_en FROM departments'
+      );
+      const departmentMap = new Map();
+      departmentsResult.rows.forEach((dept) => {
+        if (dept.name_ar) {
+          departmentMap.set(dept.name_ar.trim(), dept.id);
+        }
+        if (dept.name_en) {
+          departmentMap.set(dept.name_en.trim().toLowerCase(), dept.id);
+        }
+      });
+
+      const roleMap = {
+        'موظف': 'employee',
+        'موظف/ة': 'employee',
+        employee: 'employee',
+        'مسؤول التدريب': 'training_officer',
+        'مسئول التدريب': 'training_officer',
+        training_officer: 'training_officer',
+        'مدير النظام': 'admin',
+        مدير: 'admin',
+        admin: 'admin',
+      };
+
+      const created = [];
+      const skipped = [];
+      const errors = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const rowNumber = i + 2; // +2 to account for header row (row 1)
+
+        const employee_number = (row['الرقم الوظيفي'] || '').toString().trim();
+        const name_ar = (row['الاسم بالعربية'] || '').toString().trim();
+        const email = (row['الايميل'] || '').toString().trim().toLowerCase();
+        const roleLabel = (row['الدور'] || '').toString().trim();
+        const departmentName = (row['القسم'] || '').toString().trim();
+        const job_title_ar = (row['المسمى الوظيفي'] || '').toString().trim();
+
+        if (!name_ar || !email) {
+          skipped.push({
+            rowNumber,
+            reason: 'الاسم بالعربية و البريد الإلكتروني حقول مطلوبة',
+            email,
+            employee_number,
+          });
+          continue;
+        }
+
+        const roleKey = roleLabel.replace(/\s+/g, ' ').trim();
+        const role = roleMap[roleKey] || 'employee';
+
+        let department_id = null;
+        if (departmentName) {
+          const normalizedDeptName = departmentName.trim();
+          department_id =
+            departmentMap.get(normalizedDeptName) ||
+            departmentMap.get(normalizedDeptName.toLowerCase()) ||
+            null;
+
+          if (!department_id) {
+            skipped.push({
+              rowNumber,
+              reason: `القسم "${departmentName}" غير موجود في النظام`,
+              email,
+              employee_number,
+            });
+            continue;
+          }
+        }
+
+        try {
+          // Check duplicate email
+          const existingEmail = await db.query(
+            'SELECT id FROM users WHERE email = $1',
+            [email]
+          );
+          if (existingEmail.rows.length > 0) {
+            skipped.push({
+              rowNumber,
+              reason: 'البريد الإلكتروني موجود مسبقاً',
+              email,
+              employee_number,
+            });
+            continue;
+          }
+
+          // Check duplicate employee number if provided
+          if (employee_number) {
+            const existingEmp = await db.query(
+              'SELECT id FROM users WHERE employee_number = $1',
+              [employee_number]
+            );
+            if (existingEmp.rows.length > 0) {
+              skipped.push({
+                rowNumber,
+                reason: 'الرقم الوظيفي موجود مسبقاً',
+                email,
+                employee_number,
+              });
+              continue;
+            }
+          }
+
+          const plainPassword =
+            employee_number || email.split('@')[0] || 'Password123';
+          const passwordHash = await bcrypt.hash(plainPassword, 10);
+
+          const name_en = name_ar || email;
+          const job_title_en = job_title_ar || null;
+
+          const insertResult = await db.query(
+            `
+            INSERT INTO users (
+              email, password_hash, name_ar, name_en, role,
+              department_id, job_title_ar, job_title_en, employee_number
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id, email, name_ar, role, department_id, employee_number
+          `,
+            [
+              email,
+              passwordHash,
+              name_ar,
+              name_en,
+              role,
+              department_id,
+              job_title_ar || null,
+              job_title_en,
+              employee_number || null,
+            ]
+          );
+
+          created.push({
+            rowNumber,
+            id: insertResult.rows[0].id,
+            email: insertResult.rows[0].email,
+            name_ar,
+            role,
+            department_id,
+            employee_number: insertResult.rows[0].employee_number,
+          });
+        } catch (err) {
+          console.error('Bulk user row error:', err);
+          errors.push({
+            rowNumber,
+            email,
+            employee_number,
+            error: err.message,
+          });
+        }
+      }
+
+      res.json({
+        totalRows: rows.length,
+        createdCount: created.length,
+        skippedCount: skipped.length,
+        errorCount: errors.length,
+        created,
+        skipped,
+        errors,
+      });
+    } catch (error) {
+      console.error('Bulk upload users error:', error);
+      res
+        .status(500)
+        .json({ error: 'فشل في استيراد المستخدمين من الملف' });
+    }
+  }
+);
 
 // Get single user
 router.get('/:id', authenticate, isTrainingOfficer, async (req, res) => {

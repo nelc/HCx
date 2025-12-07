@@ -40,17 +40,8 @@ export default function Login() {
           transition={{ duration: 0.5 }}
           className="w-full max-w-md"
         >
-          {/* Logo */}
+          {/* Welcome Text */}
           <div className="mb-8">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-14 h-14 bg-gradient-to-br from-primary-600 to-primary-800 rounded-2xl flex items-center justify-center shadow-lg shadow-primary-500/30">
-                <span className="text-white font-bold text-2xl">HR</span>
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold text-primary-700">HRx</h1>
-                <p className="text-sm text-slate-500">نظام تقييم الاحتياجات التدريبية</p>
-              </div>
-            </div>
             <h2 className="text-3xl font-bold text-slate-800 mb-2">مرحباً بك</h2>
             <p className="text-slate-500">قم بتسجيل الدخول للوصول إلى حسابك</p>
           </div>
@@ -156,41 +147,19 @@ export default function Login() {
           transition={{ duration: 0.8, delay: 0.2 }}
           className="relative z-10 text-center max-w-lg"
         >
-          {/* Icon */}
-          <div className="w-24 h-24 bg-white/10 backdrop-blur-lg rounded-3xl flex items-center justify-center mx-auto mb-8 border border-white/20">
-            <svg className="w-12 h-12 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
+          {/* NELC Logo */}
+          <div className="flex items-center justify-center mx-auto mb-8">
+            <img 
+              src="/nelc-logo.png" 
+              alt="المركز الوطني للتعليم الإلكتروني" 
+              className="h-72 w-auto object-contain drop-shadow-lg"
+            />
           </div>
 
           <h2 className="text-3xl font-bold text-white mb-4">
             نظام تقييم الاحتياجات التدريبية
           </h2>
-          <p className="text-white/70 text-lg leading-relaxed">
-            نظام متكامل لتقييم مهارات الموظفين وتحديد الفجوات التدريبية
-            باستخدام الذكاء الاصطناعي وتقديم توصيات تدريبية مخصصة
-          </p>
 
-          {/* Features */}
-          <div className="mt-10 grid grid-cols-2 gap-4">
-            {[
-              { icon: '📊', text: 'تحليل المهارات' },
-              { icon: '🎯', text: 'تقييمات مخصصة' },
-              { icon: '🤖', text: 'تحليل بالذكاء الاصطناعي' },
-              { icon: '📈', text: 'تقارير متقدمة' },
-            ].map((feature, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5, delay: 0.4 + i * 0.1 }}
-                className="p-4 bg-white/5 backdrop-blur-lg rounded-xl border border-white/10"
-              >
-                <span className="text-2xl mb-2 block">{feature.icon}</span>
-                <span className="text-white/80 text-sm">{feature.text}</span>
-              </motion.div>
-            ))}
-          </div>
         </motion.div>
       </div>
     </div>

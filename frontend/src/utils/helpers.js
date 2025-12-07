@@ -1,14 +1,15 @@
-// Format date for display
+// Format date for display (Gregorian calendar)
 export const formatDate = (date, locale = 'ar-SA') => {
   if (!date) return '-';
   return new Date(date).toLocaleDateString(locale, {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
+    calendar: 'gregory', // Force Gregorian calendar
   });
 };
 
-// Format date with time
+// Format date with time (Gregorian calendar)
 export const formatDateTime = (date, locale = 'ar-SA') => {
   if (!date) return '-';
   return new Date(date).toLocaleDateString(locale, {
@@ -17,6 +18,7 @@ export const formatDateTime = (date, locale = 'ar-SA') => {
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    calendar: 'gregory', // Force Gregorian calendar
   });
 };
 
@@ -161,7 +163,7 @@ export const getTimeRemaining = (dueDate) => {
 // Generate random color for charts
 export const generateChartColors = (count) => {
   const baseColors = [
-    '#0e395e', '#4577af', '#6394c5', '#93b7d9', '#bdd3e9',
+    '#502390', '#7a45af', '#9964c5', '#b893db', '#d6c2eb',
     '#ed7a1e', '#f19642', '#f6bb78', '#22c55e', '#f59e0b',
   ];
   

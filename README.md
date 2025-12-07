@@ -1,4 +1,4 @@
-# HRx - Training Needs Assessment System
+# HCx - Training Needs Assessment System
 
 نظام تقييم الاحتياجات التدريبية - نظام متكامل لتقييم مهارات الموظفين وتحديد الفجوات التدريبية باستخدام الذكاء الاصطناعي.
 
@@ -24,6 +24,14 @@
 - Identify strengths and skill gaps
 - Personalized training recommendations
 - Integration-ready for National Digital Content Repository API
+
+### 📄 CV Import & Skill Extraction
+- Upload CV (PDF, DOC, DOCX) to automatically extract skills
+- Local text extraction from CV files (no external APIs)
+- AI-powered parsing using OpenAI to extract structured data
+- Intelligent skill extraction (short terms, 1-2 words max)
+- Auto-populate skill profiles from CV
+- Preview and edit extracted data before import
 
 ### 📈 Multi-Level Dashboards
 - Employee-level dashboard
@@ -148,6 +156,11 @@ After running the seed script:
 ### Analysis
 - `POST /api/analysis/assignment/:assignmentId` - Analyze responses
 - `GET /api/analysis/:id` - Get analysis result
+
+### CV Import
+- `POST /api/cv-import/upload` - Upload CV and extract data
+- `POST /api/cv-import/confirm` - Confirm and save CV import
+- `GET /api/cv-import/history` - Get CV import history
 
 ### Dashboard
 - `GET /api/dashboard/center` - Center-wide dashboard

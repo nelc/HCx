@@ -14,14 +14,17 @@ import Tests from './pages/Tests';
 import TestBuilder from './pages/TestBuilder';
 import TestDetail from './pages/TestDetail';
 import TakeTest from './pages/TakeTest';
+import TestResultsImmediate from './pages/TestResultsImmediate';
 import MyAssessments from './pages/MyAssessments';
-import MyResults from './pages/MyResults';
 import ResultDetail from './pages/ResultDetail';
+import CompetencyMatrix from './pages/CompetencyMatrix';
 import Domains from './pages/Domains';
 import Users from './pages/Users';
 import Departments from './pages/Departments';
 import Recommendations from './pages/Recommendations';
 import Settings from './pages/Settings';
+import ResultsOverview from './pages/ResultsOverview';
+import Courses from './pages/Courses';
 
 // Protected Route Component
 function ProtectedRoute({ children, allowedRoles }) {
@@ -128,8 +131,9 @@ function App() {
             {/* Employee routes */}
             <Route path="assessments" element={<PageWrapper><MyAssessments /></PageWrapper>} />
             <Route path="assessments/:id/take" element={<PageWrapper><TakeTest /></PageWrapper>} />
-            <Route path="my-results" element={<PageWrapper><MyResults /></PageWrapper>} />
+            <Route path="test-results/:assignmentId" element={<PageWrapper><TestResultsImmediate /></PageWrapper>} />
             <Route path="results/:id" element={<PageWrapper><ResultDetail /></PageWrapper>} />
+            <Route path="competency-matrix" element={<PageWrapper><CompetencyMatrix /></PageWrapper>} />
             <Route path="recommendations" element={<PageWrapper><Recommendations /></PageWrapper>} />
             
             {/* Training officer routes */}
@@ -168,6 +172,16 @@ function App() {
             <Route path="departments" element={
               <ProtectedRoute allowedRoles={['admin']}>
                 <PageWrapper><Departments /></PageWrapper>
+              </ProtectedRoute>
+            } />
+            <Route path="courses" element={
+              <ProtectedRoute allowedRoles={['admin', 'training_officer']}>
+                <PageWrapper><Courses /></PageWrapper>
+              </ProtectedRoute>
+            } />
+            <Route path="results-overview" element={
+              <ProtectedRoute allowedRoles={['admin', 'training_officer']}>
+                <PageWrapper><ResultsOverview /></PageWrapper>
               </ProtectedRoute>
             } />
             <Route path="settings" element={<PageWrapper><Settings /></PageWrapper>} />

@@ -16,6 +16,8 @@ import {
   DocumentTextIcon,
   LightBulbIcon,
   FolderIcon,
+  Square3Stack3DIcon,
+  BookOpenIcon,
 } from '@heroicons/react/24/outline';
 import useAuthStore from '../../store/authStore';
 import { getInitials, getRoleLabel } from '../../utils/helpers';
@@ -24,6 +26,8 @@ import api from '../../utils/api';
 const adminNavItems = [
   { name: 'لوحة التحكم', path: '/dashboard', icon: HomeIcon },
   { name: 'التقييمات', path: '/tests', icon: ClipboardDocumentListIcon },
+  { name: 'النتائج والتحليلات', path: '/results-overview', icon: ChartBarIcon },
+  { name: 'الدورات التدريبية', path: '/courses', icon: AcademicCapIcon },
   { name: 'مجالات التدريب', path: '/domains', icon: FolderIcon },
   { name: 'المستخدمون', path: '/users', icon: UsersIcon },
   { name: 'الأقسام', path: '/departments', icon: BuildingOfficeIcon },
@@ -33,6 +37,8 @@ const adminNavItems = [
 const officerNavItems = [
   { name: 'لوحة التحكم', path: '/dashboard', icon: HomeIcon },
   { name: 'التقييمات', path: '/tests', icon: ClipboardDocumentListIcon },
+  { name: 'النتائج والتحليلات', path: '/results-overview', icon: ChartBarIcon },
+  { name: 'الدورات التدريبية', path: '/courses', icon: AcademicCapIcon },
   { name: 'التوصيات', path: '/recommendations', icon: LightBulbIcon },
   { name: 'الإعدادات', path: '/settings', icon: Cog6ToothIcon },
 ];
@@ -40,7 +46,7 @@ const officerNavItems = [
 const employeeNavItems = [
   { name: 'لوحة التحكم', path: '/dashboard', icon: HomeIcon },
   { name: 'تقييماتي', path: '/assessments', icon: DocumentTextIcon },
-  { name: 'نتائجي', path: '/my-results', icon: ChartBarIcon },
+  { name: 'مصفوفة الكفاءات', path: '/competency-matrix', icon: Square3Stack3DIcon },
   { name: 'التوصيات التدريبية', path: '/recommendations', icon: AcademicCapIcon },
   { name: 'الإعدادات', path: '/settings', icon: Cog6ToothIcon },
 ];
@@ -119,11 +125,13 @@ export default function DashboardLayout() {
         {/* Logo */}
         <div className="h-20 flex items-center justify-between px-6 border-b border-slate-100">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-primary-600 to-primary-800 rounded-xl flex items-center justify-center">
-              <span className="text-white font-bold text-lg">HR</span>
-            </div>
+            <img 
+              src="/nelc-logoc.png" 
+              alt="NELC Logo" 
+              className="w-20 h-20 object-contain"
+            />
             <div>
-              <h1 className="font-bold text-primary-700 text-lg">HRx</h1>
+              <h1 className="font-bold text-primary-700 text-lg">HCx</h1>
               <p className="text-xs text-slate-500">نظام تقييم التدريب</p>
             </div>
           </div>

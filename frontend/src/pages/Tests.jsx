@@ -12,10 +12,11 @@ import {
   EyeIcon,
   UserGroupIcon,
 } from '@heroicons/react/24/outline';
-import { Menu } from '@headlessui/react';
+import { Menu, Dialog } from '@headlessui/react';
 import toast from 'react-hot-toast';
 import api from '../utils/api';
 import { formatDate, getStatusColor, getStatusLabel } from '../utils/helpers';
+import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
 
 export default function Tests() {
   const [tests, setTests] = useState([]);
@@ -24,6 +25,15 @@ export default function Tests() {
   const [search, setSearch] = useState('');
   const [selectedDomain, setSelectedDomain] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('');
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [testToDelete, setTestToDelete] = useState(null);
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [testToAssign, setTestToAssign] = useState(null);
+  const [employees, setEmployees] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [selectedEmployees, setSelectedEmployees] = useState([]);
+  const [selectedDepartment, setSelectedDepartment] = useState('');
+  const [assigning, setAssigning] = useState(false);
 
   useEffect(() => {
     fetchTests();
@@ -74,15 +84,74 @@ export default function Tests() {
     }
   };
 
-  const handleDelete = async (testId) => {
-    if (!confirm('هل أنت متأكد من حذف هذا التقييم؟')) return;
+  const handleDelete = (testId) => {
+    const test = tests.find(t => t.id === testId);
+    setTestToDelete(test);
+    setShowDeleteModal(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!testToDelete) return;
     
     try {
-      await api.delete(`/tests/${testId}`);
+      await api.delete(`/tests/${testToDelete.id}`);
       toast.success('تم حذف التقييم بنجاح');
       fetchTests();
     } catch (error) {
       toast.error(error.response?.data?.error || 'فشل في حذف التقييم');
+    } finally {
+      setShowDeleteModal(false);
+      setTestToDelete(null);
+    }
+  };
+
+  const openAssignModal = async (test) => {
+    setTestToAssign(test);
+    setShowAssignModal(true);
+    
+    try {
+      const [empRes, deptRes] = await Promise.all([
+        api.get('/users/list/employees'),
+        api.get('/departments')
+      ]);
+      setEmployees(empRes.data || []);
+      setDepartments(deptRes.data || []);
+    } catch (error) {
+      console.error('Failed to fetch data');
+    }
+  };
+
+  const handleAssign = async () => {
+    if (selectedEmployees.length === 0 && !selectedDepartment) {
+      toast.error('الرجاء اختيار موظفين أو قسم');
+      return;
+    }
+    
+    setAssigning(true);
+    
+    try {
+      if (selectedDepartment) {
+        await api.post('/assignments/department', {
+          test_id: testToAssign.id,
+          department_id: selectedDepartment,
+        });
+      } else {
+        await api.post('/assignments', {
+          test_id: testToAssign.id,
+          user_ids: selectedEmployees,
+        });
+      }
+      
+      toast.success('تم تعيين التقييم بنجاح');
+      setShowAssignModal(false);
+      setTestToAssign(null);
+      setSelectedEmployees([]);
+      setSelectedDepartment('');
+      fetchTests();
+    } catch (error) {
+      toast.error('فشل في تعيين التقييم');
+    } finally {
+      setAssigning(false);
     }
   };
 
@@ -180,12 +249,13 @@ export default function Tests() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: index * 0.05 }}
-              className="card overflow-hidden group"
+              className="card group"
+              style={{ overflow: 'visible' }}
             >
               {/* Domain color bar */}
               <div 
-                className="h-1"
-                style={{ backgroundColor: test.domain_color || '#0e395e' }}
+                className="h-1 rounded-t-xl overflow-hidden"
+                style={{ backgroundColor: test.domain_color || '#502390' }}
               ></div>
               
               <div className="p-6">
@@ -202,7 +272,7 @@ export default function Tests() {
                     <Menu.Button className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">
                       <EllipsisVerticalIcon className="w-5 h-5" />
                     </Menu.Button>
-                    <Menu.Items className="absolute left-0 mt-2 w-48 bg-white rounded-xl shadow-lg border border-slate-100 py-1 z-10">
+                    <Menu.Items className="absolute left-0 mt-2 w-48 bg-white rounded-xl shadow-lg border border-slate-100 py-1 z-50">
                       <Menu.Item>
                         {({ active }) => (
                           <Link
@@ -227,6 +297,19 @@ export default function Tests() {
                           )}
                         </Menu.Item>
                       )}
+                      {test.status === 'published' && (
+                        <Menu.Item>
+                          {({ active }) => (
+                            <button
+                              onClick={() => openAssignModal(test)}
+                              className={`flex items-center gap-2 px-4 py-2 text-sm w-full ${active ? 'bg-slate-50' : ''}`}
+                            >
+                              <UserGroupIcon className="w-4 h-4 text-slate-400" />
+                              تعيين موظفين
+                            </button>
+                          )}
+                        </Menu.Item>
+                      )}
                       <Menu.Item>
                         {({ active }) => (
                           <button
@@ -238,19 +321,17 @@ export default function Tests() {
                           </button>
                         )}
                       </Menu.Item>
-                      {test.status !== 'closed' && (
-                        <Menu.Item>
-                          {({ active }) => (
-                            <button
-                              onClick={() => handleDelete(test.id)}
-                              className={`flex items-center gap-2 px-4 py-2 text-sm w-full text-red-600 ${active ? 'bg-red-50' : ''}`}
-                            >
-                              <TrashIcon className="w-4 h-4" />
-                              حذف
-                            </button>
-                          )}
-                        </Menu.Item>
-                      )}
+                      <Menu.Item>
+                        {({ active }) => (
+                          <button
+                            onClick={() => handleDelete(test.id)}
+                            className={`flex items-center gap-2 px-4 py-2 text-sm w-full text-red-600 ${active ? 'bg-red-50' : ''}`}
+                          >
+                            <TrashIcon className="w-4 h-4" />
+                            حذف
+                          </button>
+                        )}
+                      </Menu.Item>
                     </Menu.Items>
                   </Menu>
                 </div>
@@ -290,6 +371,117 @@ export default function Tests() {
           ))}
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={showDeleteModal}
+        onClose={() => {
+          setShowDeleteModal(false);
+          setTestToDelete(null);
+        }}
+        onConfirm={confirmDelete}
+        title="تأكيد حذف التقييم"
+        message={testToDelete ? `هل أنت متأكد من حذف "${testToDelete.title_ar}"؟\n\nملاحظة: لا يمكن حذف التقييمات التي تحتوي على إجابات مكتملة.` : ''}
+      />
+
+      {/* Assign Modal */}
+      <Dialog open={showAssignModal} onClose={() => setShowAssignModal(false)} className="relative z-50">
+        <div className="fixed inset-0 bg-black/50" aria-hidden="true" />
+        
+        <div className="fixed inset-0 flex items-center justify-center p-4">
+          <Dialog.Panel className="bg-white rounded-2xl p-6 max-w-lg w-full max-h-[80vh] overflow-y-auto">
+            <Dialog.Title className="text-xl font-semibold text-primary-700 mb-4">
+              تعيين التقييم للموظفين
+            </Dialog.Title>
+            
+            {testToAssign && (
+              <p className="text-sm text-slate-600 mb-6">
+                تقييم: <span className="font-medium">{testToAssign.title_ar}</span>
+              </p>
+            )}
+            
+            {/* Assign to department */}
+            <div className="mb-6">
+              <label className="label">تعيين لقسم كامل</label>
+              <select
+                value={selectedDepartment}
+                onChange={(e) => {
+                  setSelectedDepartment(e.target.value);
+                  if (e.target.value) setSelectedEmployees([]);
+                }}
+                className="input"
+              >
+                <option value="">اختر قسم</option>
+                {departments.map(dept => (
+                  <option key={dept.id} value={dept.id}>{dept.name_ar}</option>
+                ))}
+              </select>
+            </div>
+            
+            {!selectedDepartment && (
+              <>
+                <div className="text-center text-slate-500 my-4">- أو -</div>
+                
+                {/* Select employees */}
+                <div>
+                  <label className="label">اختيار موظفين محددين</label>
+                  <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-xl">
+                    {employees.map(emp => (
+                      <label
+                        key={emp.id}
+                        className="flex items-center gap-3 p-3 hover:bg-slate-50 cursor-pointer border-b border-slate-100 last:border-0"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedEmployees.includes(emp.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedEmployees([...selectedEmployees, emp.id]);
+                            } else {
+                              setSelectedEmployees(selectedEmployees.filter(id => id !== emp.id));
+                            }
+                          }}
+                          className="w-4 h-4 rounded border-slate-300 text-primary-600"
+                        />
+                        <div>
+                          <p className="font-medium text-slate-700">{emp.name_ar}</p>
+                          <p className="text-xs text-slate-500">{emp.department_name_ar}</p>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                  {selectedEmployees.length > 0 && (
+                    <p className="text-sm text-slate-500 mt-2">
+                      تم اختيار {selectedEmployees.length} موظف
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+            
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => {
+                  setShowAssignModal(false);
+                  setTestToAssign(null);
+                  setSelectedEmployees([]);
+                  setSelectedDepartment('');
+                }}
+                className="btn btn-secondary flex-1"
+              >
+                إلغاء
+              </button>
+              <button
+                onClick={handleAssign}
+                disabled={assigning || (selectedEmployees.length === 0 && !selectedDepartment)}
+                className="btn btn-primary flex-1"
+              >
+                {assigning ? 'جاري التعيين...' : 'تعيين'}
+              </button>
+            </div>
+          </Dialog.Panel>
+        </div>
+      </Dialog>
     </div>
   );
 }

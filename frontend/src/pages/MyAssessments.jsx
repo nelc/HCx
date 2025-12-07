@@ -140,7 +140,7 @@ export default function MyAssessments() {
               >
                 <div 
                   className="h-1"
-                  style={{ backgroundColor: assignment.domain_color || '#0e395e' }}
+                  style={{ backgroundColor: assignment.domain_color || '#502390' }}
                 ></div>
                 
                 <div className="p-6">
@@ -148,11 +148,11 @@ export default function MyAssessments() {
                     {/* Icon */}
                     <div 
                       className="w-14 h-14 rounded-xl flex items-center justify-center shrink-0"
-                      style={{ backgroundColor: (assignment.domain_color || '#0e395e') + '20' }}
+                      style={{ backgroundColor: (assignment.domain_color || '#502390') + '20' }}
                     >
                       <ClipboardDocumentListIcon 
                         className="w-7 h-7" 
-                        style={{ color: assignment.domain_color || '#0e395e' }}
+                        style={{ color: assignment.domain_color || '#502390' }}
                       />
                     </div>
                     
@@ -187,6 +187,25 @@ export default function MyAssessments() {
                           </span>
                         )}
                       </div>
+                      
+                      {/* Target Skills */}
+                      {assignment.target_skills && assignment.target_skills.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-slate-100">
+                          <p className="text-xs text-slate-500 mb-2">
+                            <span className="font-semibold">المهارات المستهدفة:</span> Targeted Skills
+                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {assignment.target_skills.map((skill) => (
+                              <span 
+                                key={skill.id}
+                                className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-primary-50 text-primary-700"
+                              >
+                                {skill.name_ar}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                     
                     {/* Actions */}

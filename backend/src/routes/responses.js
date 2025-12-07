@@ -2,6 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const db = require('../db');
 const { authenticate } = require('../middleware/auth');
+const { analyzeAssignment } = require('./analysis');
 
 const router = express.Router();
 
@@ -28,6 +29,7 @@ router.get('/assignment/:assignmentId', authenticate, async (req, res) => {
              q.question_en,
              q.question_type,
              q.options,
+             q.weight,
              s.name_ar as skill_name_ar,
              s.name_en as skill_name_en
       FROM responses r
@@ -77,7 +79,7 @@ router.post('/', authenticate, [
     
     // Get question to calculate score
     const question = await db.query(
-      'SELECT question_type, options FROM questions WHERE id = $1',
+      'SELECT question_type, options, likert_labels, self_rating_config FROM questions WHERE id = $1',
       [question_id]
     );
     
@@ -87,16 +89,33 @@ router.post('/', authenticate, [
     
     let score = null;
     let isCorrect = null;
+    const questionType = question.rows[0].question_type;
     
-    // Calculate score for MCQ
-    if (question.rows[0].question_type === 'mcq' && question.rows[0].options) {
+    // Calculate score based on question type
+    if (questionType === 'mcq' && question.rows[0].options) {
       const options = question.rows[0].options;
       const selectedOption = options.find(o => o.value === response_value);
       if (selectedOption) {
         score = selectedOption.score || 0;
         isCorrect = selectedOption.is_correct || false;
       }
+    } else if (questionType === 'likert_scale' && response_value) {
+      // Likert scale: 1-5, normalize to 0-10 scale for consistency
+      const likertValue = parseInt(response_value) || 0;
+      if (likertValue >= 1 && likertValue <= 5) {
+        // Normalize from 1-5 to 0-10 scale: (value - 1) / 4 * 10
+        score = ((likertValue - 1) / 4) * 10;
+        isCorrect = likertValue >= 3; // Consider 3+ as acceptable
+      }
+    } else if (questionType === 'self_rating' && response_value) {
+      // Self-rating: already 1-10 scale, use directly
+      const ratingValue = parseInt(response_value) || 0;
+      if (ratingValue >= 1 && ratingValue <= 10) {
+        score = ratingValue;
+        isCorrect = ratingValue >= 5; // Consider 5+ as acceptable
+      }
     }
+    // Open text questions don't have scores
     
     // Upsert response
     const result = await db.query(`
@@ -145,21 +164,39 @@ router.post('/bulk', authenticate, [
     
     for (const r of responses) {
       const question = await db.query(
-        'SELECT question_type, options FROM questions WHERE id = $1',
+        'SELECT question_type, options, likert_labels, self_rating_config FROM questions WHERE id = $1',
         [r.question_id]
       );
       
       let score = null;
       let isCorrect = null;
+      const questionType = question.rows[0]?.question_type;
       
-      if (question.rows[0]?.question_type === 'mcq' && question.rows[0]?.options) {
+      // Calculate score based on question type
+      if (questionType === 'mcq' && question.rows[0]?.options) {
         const options = question.rows[0].options;
         const selectedOption = options.find(o => o.value === r.response_value);
         if (selectedOption) {
           score = selectedOption.score || 0;
           isCorrect = selectedOption.is_correct || false;
         }
+      } else if (questionType === 'likert_scale' && r.response_value) {
+        // Likert scale: 1-5, normalize to 0-10 scale for consistency
+        const likertValue = parseInt(r.response_value) || 0;
+        if (likertValue >= 1 && likertValue <= 5) {
+          // Normalize from 1-5 to 0-10 scale: (value - 1) / 4 * 10
+          score = ((likertValue - 1) / 4) * 10;
+          isCorrect = likertValue >= 3; // Consider 3+ as acceptable
+        }
+      } else if (questionType === 'self_rating' && r.response_value) {
+        // Self-rating: already 1-10 scale, use directly
+        const ratingValue = parseInt(r.response_value) || 0;
+        if (ratingValue >= 1 && ratingValue <= 10) {
+          score = ratingValue;
+          isCorrect = ratingValue >= 5; // Consider 5+ as acceptable
+        }
       }
+      // Open text questions don't have scores
       
       const result = await db.query(`
         INSERT INTO responses (assignment_id, question_id, response_value, response_data, score, is_correct)
@@ -209,19 +246,129 @@ router.post('/submit/:assignmentId', authenticate, async (req, res) => {
       WHERE id = $2
     `, [time_spent_seconds, req.params.assignmentId]);
     
-    // Calculate overall score from responses
-    const scores = await db.query(`
+    // Calculate overall score from responses with proper normalization
+    // Get all responses with their question types and max scores
+    const responsesData = await db.query(`
       SELECT 
-        COALESCE(AVG(r.score), 0) as avg_score,
-        COUNT(*) as total_responses,
-        SUM(CASE WHEN r.is_correct THEN 1 ELSE 0 END) as correct_count
+        r.score,
+        r.is_correct,
+        q.question_type,
+        q.options,
+        q.weight
       FROM responses r
+      JOIN questions q ON r.question_id = q.id
       WHERE r.assignment_id = $1
     `, [req.params.assignmentId]);
     
+    let totalScore = 0;
+    let totalMaxScore = 0;
+    let totalResponses = 0;
+    let correctCount = 0;
+    
+    for (const response of responsesData.rows) {
+      if (response.score !== null) {
+        let maxScore = 10; // Default max score
+        
+        // Determine max score based on question type
+        if (response.question_type === 'mcq' && response.options && Array.isArray(response.options) && response.options.length > 0) {
+          // For MCQ, max score is the highest option score
+          const optionScores = response.options.map(o => parseFloat(o.score) || 0);
+          maxScore = Math.max(...optionScores, 10);
+        } else if (response.question_type === 'likert_scale') {
+          // Likert scale: 1-5, normalized to 0-10, so max is 10
+          maxScore = 10;
+        } else if (response.question_type === 'self_rating') {
+          // Self-rating: 1-10, so max is 10
+          maxScore = 10;
+        }
+        
+        const weight = response.weight || 1;
+        totalScore += (response.score || 0) * weight;
+        totalMaxScore += maxScore * weight;
+        totalResponses++;
+        
+        if (response.is_correct) {
+          correctCount++;
+        }
+      }
+    }
+    
+    // Calculate overall percentage score
+    const overallPercentage = totalMaxScore > 0 
+      ? Math.round((totalScore / totalMaxScore) * 100) 
+      : 0;
+    
+    const avgScore = totalResponses > 0 
+      ? Math.round((totalScore / totalResponses) * 10) / 10 
+      : 0;
+    
+    // Automatically trigger analysis in the background
+    analyzeAssignment(req.params.assignmentId)
+      .then((result) => {
+        if (result.already_analyzed) {
+          console.log(`Assignment ${req.params.assignmentId} already analyzed`);
+        } else {
+          console.log(`Analysis completed for assignment ${req.params.assignmentId}`);
+        }
+      })
+      .catch((error) => {
+        console.error(`Failed to analyze assignment ${req.params.assignmentId}:`, error);
+        // Don't fail the submission if analysis fails
+      });
+    
+    // Get detailed question breakdown with weights
+    const questionBreakdown = await db.query(`
+      SELECT 
+        q.id,
+        q.question_ar,
+        q.question_type,
+        q.weight,
+        q.options,
+        r.score,
+        r.is_correct
+      FROM responses r
+      JOIN questions q ON r.question_id = q.id
+      WHERE r.assignment_id = $1
+      ORDER BY q.order_index
+    `, [req.params.assignmentId]);
+    
+    const weightedBreakdown = questionBreakdown.rows.map(q => {
+      const weight = q.weight || 1;
+      let maxScore = 10;
+      
+      if (q.question_type === 'mcq' && q.options && Array.isArray(q.options) && q.options.length > 0) {
+        const optionScores = q.options.map(o => parseFloat(o.score) || 0);
+        maxScore = Math.max(...optionScores, 10);
+      }
+      
+      const rawScore = q.score || 0;
+      const weightedScore = rawScore * weight;
+      const weightedMaxScore = maxScore * weight;
+      
+      return {
+        question_id: q.id,
+        question_text: q.question_ar,
+        question_type: q.question_type,
+        weight: weight,
+        raw_score: rawScore,
+        max_score: maxScore,
+        weighted_score: Math.round(weightedScore * 10) / 10,
+        weighted_max_score: Math.round(weightedMaxScore * 10) / 10,
+        is_correct: q.is_correct
+      };
+    });
+    
     res.json({
       message: 'Test submitted successfully',
-      score: scores.rows[0],
+      score: {
+        overall_percentage: overallPercentage,
+        avg_score: avgScore,
+        total_responses: totalResponses,
+        correct_count: correctCount,
+        total_score: Math.round(totalScore * 10) / 10,
+        max_score: totalMaxScore,
+        weighted_breakdown: weightedBreakdown
+      },
       assignment_id: req.params.assignmentId
     });
   } catch (error) {

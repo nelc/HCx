@@ -1,4 +1,4 @@
--- HRx Training Needs Assessment System - Database Schema
+-- HCx Training Needs Assessment System - Database Schema
 -- PostgreSQL Database
 
 -- Enable UUID extension
@@ -28,13 +28,38 @@ DROP TABLE IF EXISTS departments CASCADE;
 CREATE TABLE departments (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name_ar VARCHAR(255) NOT NULL,
-    name_en VARCHAR(255) NOT NULL,
+    name_en VARCHAR(255),
     description_ar TEXT,
     description_en TEXT,
+    type VARCHAR(20) CHECK (type IN ('sector', 'department', 'section')) DEFAULT 'department',
     parent_id UUID REFERENCES departments(id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Ensure sectors have no parent
+    CONSTRAINT sectors_no_parent CHECK (
+        (type = 'sector' AND parent_id IS NULL) OR 
+        (type != 'sector')
+    ),
+    -- Ensure departments have a parent (sector)
+    CONSTRAINT departments_require_parent CHECK (
+        (type = 'department' AND parent_id IS NOT NULL) OR 
+        (type != 'department')
+    ),
+    -- Ensure sections have a parent (department)
+    CONSTRAINT sections_require_parent CHECK (
+        (type = 'section' AND parent_id IS NOT NULL) OR 
+        (type != 'section')
+    )
 );
+
+-- Unique constraint: same name, type, and parent (using partial index for NULL handling)
+-- For sectors (parent_id IS NULL), ensure unique name
+CREATE UNIQUE INDEX unique_sector_name ON departments (name_ar) 
+WHERE type = 'sector' AND parent_id IS NULL;
+
+-- For departments and sections, ensure unique name within parent
+CREATE UNIQUE INDEX unique_department_name_parent ON departments (name_ar, type, parent_id) 
+WHERE parent_id IS NOT NULL;
 
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -92,7 +117,7 @@ CREATE TABLE tests (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     domain_id UUID REFERENCES training_domains(id) ON DELETE CASCADE,
     title_ar VARCHAR(500) NOT NULL,
-    title_en VARCHAR(500) NOT NULL,
+    title_en VARCHAR(500),
     description_ar TEXT,
     description_en TEXT,
     instructions_ar TEXT,
@@ -117,7 +142,7 @@ CREATE TABLE questions (
     skill_id UUID REFERENCES skills(id) ON DELETE SET NULL,
     question_type VARCHAR(50) NOT NULL CHECK (question_type IN ('mcq', 'open_text', 'likert_scale', 'self_rating')),
     question_ar TEXT NOT NULL,
-    question_en TEXT NOT NULL,
+    question_en TEXT,
     options JSONB, -- For MCQ: [{value: 'a', text_ar: '', text_en: '', is_correct: bool, score: num}]
     likert_labels JSONB, -- For Likert: {min_label_ar, min_label_en, max_label_ar, max_label_en, scale: 5|7}
     self_rating_config JSONB, -- For self-rating: {min: 1, max: 10, labels: [...]}
@@ -282,6 +307,18 @@ CREATE TABLE notifications (
 );
 
 -- ============================================
+-- DOMAIN-DEPARTMENT RELATIONSHIPS
+-- ============================================
+
+CREATE TABLE domain_departments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    domain_id UUID NOT NULL REFERENCES training_domains(id) ON DELETE CASCADE,
+    department_id UUID NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(domain_id, department_id)
+);
+
+-- ============================================
 -- AUDIT LOG
 -- ============================================
 
@@ -305,6 +342,7 @@ CREATE TABLE audit_log (
 CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_users_role ON users(role);
 CREATE INDEX idx_users_department ON users(department_id);
+CREATE INDEX idx_departments_type ON departments(type);
 CREATE INDEX idx_tests_domain ON tests(domain_id);
 CREATE INDEX idx_tests_status ON tests(status);
 CREATE INDEX idx_questions_test ON questions(test_id);
@@ -319,6 +357,8 @@ CREATE INDEX idx_notifications_user ON notifications(user_id);
 CREATE INDEX idx_notifications_unread ON notifications(user_id, is_read) WHERE is_read = false;
 CREATE INDEX idx_audit_log_user ON audit_log(user_id);
 CREATE INDEX idx_audit_log_entity ON audit_log(entity_type, entity_id);
+CREATE INDEX idx_domain_departments_domain ON domain_departments(domain_id);
+CREATE INDEX idx_domain_departments_department ON domain_departments(department_id);
 
 -- ============================================
 -- UPDATED_AT TRIGGER FUNCTION

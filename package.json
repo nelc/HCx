@@ -1,7 +1,7 @@
 {
   "name": "hrx-training-needs-assessment",
   "version": "1.0.0",
-  "description": "HRx Training Needs Assessment System - AI-powered skill gap analysis and training recommendations",
+  "description": "HCx Training Needs Assessment System - AI-powered skill gap analysis and training recommendations",
   "private": true,
   "workspaces": [
     "backend",

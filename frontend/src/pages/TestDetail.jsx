@@ -106,16 +106,6 @@ export default function TestDetail() {
     }
   };
 
-  const handleAnalyze = async (assignmentId) => {
-    try {
-      toast.loading('جاري تحليل النتائج...', { id: 'analyzing' });
-      await api.post(`/analysis/assignment/${assignmentId}`);
-      toast.success('تم التحليل بنجاح', { id: 'analyzing' });
-      fetchAssignments();
-    } catch (error) {
-      toast.error(error.response?.data?.error || 'فشل في التحليل', { id: 'analyzing' });
-    }
-  };
 
   if (loading) {
     return (
@@ -143,12 +133,10 @@ export default function TestDetail() {
           <p className="text-slate-500">{test?.domain_name_ar}</p>
         </div>
         <div className="flex items-center gap-2">
-          {test?.status === 'draft' && (
-            <Link to={`/tests/${id}/edit`} className="btn btn-secondary">
-              <PencilIcon className="w-5 h-5" />
-              تعديل
-            </Link>
-          )}
+          <Link to={`/tests/${id}/edit`} className="btn btn-secondary">
+            <PencilIcon className="w-5 h-5" />
+            تعديل التقييم
+          </Link>
           {test?.status === 'published' && (
             <button onClick={openAssignModal} className="btn btn-primary">
               <UserGroupIcon className="w-5 h-5" />
@@ -175,10 +163,18 @@ export default function TestDetail() {
           <p className="text-2xl font-bold text-primary-700">{test?.duration_minutes || 30} دقيقة</p>
         </div>
         <div className="card p-4">
-          <p className="text-sm text-slate-500">نسبة الإكمال</p>
-          <p className="text-2xl font-bold text-primary-700">
-            {assignments.length > 0 ? Math.round((completedCount / assignments.length) * 100) : 0}%
-          </p>
+          <p className="text-sm text-slate-500 mb-2">المهارات المستهدفة</p>
+          {test?.target_skills && test.target_skills.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {test.target_skills.map((skill) => (
+                <span key={skill.id} className="bg-primary-100 text-primary-700 text-xs px-2 py-1 rounded-lg">
+                  {skill.name_ar}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-400">لا توجد مهارات محددة</p>
+          )}
         </div>
       </div>
 
@@ -267,7 +263,6 @@ export default function TestDetail() {
                     <th>القسم</th>
                     <th>الحالة</th>
                     <th>تاريخ التعيين</th>
-                    <th>الإجراءات</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -281,16 +276,6 @@ export default function TestDetail() {
                         </span>
                       </td>
                       <td className="text-slate-500">{formatDate(assignment.created_at)}</td>
-                      <td>
-                        {assignment.status === 'completed' && (
-                          <button
-                            onClick={() => handleAnalyze(assignment.id)}
-                            className="text-sm text-primary-600 hover:text-primary-700 font-medium"
-                          >
-                            تحليل النتائج
-                          </button>
-                        )}
-                      </td>
                     </tr>
                   ))}
                 </tbody>

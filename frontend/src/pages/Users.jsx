@@ -6,11 +6,13 @@ import {
   TrashIcon,
   MagnifyingGlassIcon,
   UserCircleIcon,
+  ArrowUpTrayIcon,
 } from '@heroicons/react/24/outline';
 import { Dialog } from '@headlessui/react';
 import toast from 'react-hot-toast';
-import api from '../utils/api';
+import api, { uploadUsersCSV } from '../utils/api';
 import { getRoleLabel, getInitials, formatDate } from '../utils/helpers';
+import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
 
 export default function Users() {
   const [users, setUsers] = useState([]);
@@ -21,6 +23,12 @@ export default function Users() {
   const [filterDepartment, setFilterDepartment] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [userToDelete, setUserToDelete] = useState(null);
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
   const [form, setForm] = useState({
     email: '',
     password: '',
@@ -78,6 +86,12 @@ export default function Users() {
     setShowModal(true);
   };
 
+  const openBulkModal = () => {
+    setBulkFile(null);
+    setBulkResult(null);
+    setShowBulkModal(true);
+  };
+
   const openEditModal = (user) => {
     setEditingUser(user);
     setForm({
@@ -126,15 +140,44 @@ export default function Users() {
     }
   };
 
-  const handleDelete = async (user) => {
-    if (!confirm(`هل أنت متأكد من حذف المستخدم "${user.name_ar}"؟`)) return;
+  const handleDelete = (user) => {
+    setUserToDelete(user);
+    setShowDeleteModal(true);
+  };
+
+  const handleBulkUpload = async (e) => {
+    e.preventDefault();
+
+    if (!bulkFile) {
+      toast.error('الرجاء اختيار ملف CSV');
+      return;
+    }
+
+    setBulkUploading(true);
+    try {
+      const response = await uploadUsersCSV(bulkFile);
+      setBulkResult(response.data);
+      toast.success('تم استيراد المستخدمين من الملف بنجاح');
+      fetchUsers();
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'فشل في استيراد الملف');
+    } finally {
+      setBulkUploading(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!userToDelete) return;
     
     try {
-      await api.delete(`/users/${user.id}`);
+      await api.delete(`/users/${userToDelete.id}`);
       toast.success('تم حذف المستخدم بنجاح');
       fetchUsers();
     } catch (error) {
       toast.error('فشل في حذف المستخدم');
+    } finally {
+      setShowDeleteModal(false);
+      setUserToDelete(null);
     }
   };
 
@@ -158,10 +201,19 @@ export default function Users() {
           <h1 className="text-2xl font-bold text-primary-700">المستخدمون</h1>
           <p className="text-slate-500">إدارة حسابات المستخدمين والصلاحيات</p>
         </div>
-        <button onClick={openCreateModal} className="btn btn-primary">
-          <PlusIcon className="w-5 h-5" />
-          إضافة مستخدم
-        </button>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button
+            onClick={openBulkModal}
+            className="btn btn-secondary whitespace-nowrap"
+          >
+            <ArrowUpTrayIcon className="w-5 h-5" />
+            استيراد من CSV
+          </button>
+          <button onClick={openCreateModal} className="btn btn-primary whitespace-nowrap">
+            <PlusIcon className="w-5 h-5" />
+            إضافة مستخدم
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -397,6 +449,115 @@ export default function Users() {
           </Dialog.Panel>
         </div>
       </Dialog>
+
+      {/* Bulk Upload Modal */}
+      <Dialog open={showBulkModal} onClose={() => setShowBulkModal(false)} className="relative z-50">
+        <div className="fixed inset-0 bg-black/50" aria-hidden="true" />
+
+        <div className="fixed inset-0 flex items-center justify-center p-4">
+          <Dialog.Panel className="bg-white rounded-2xl p-6 max-w-xl w-full max-h-[90vh] overflow-y-auto">
+            <Dialog.Title className="text-xl font-semibold text-primary-700 mb-4">
+              استيراد المستخدمين من ملف CSV
+            </Dialog.Title>
+
+            <form onSubmit={handleBulkUpload} className="space-y-4">
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm text-slate-700 space-y-2">
+                <p className="font-medium">تنسيق الأعمدة المطلوب (بالترتيب):</p>
+                <ul className="list-disc list-inside space-y-1">
+                  <li>الرقم الوظيفي</li>
+                  <li>الاسم بالعربية</li>
+                  <li>الايميل</li>
+                  <li>الدور (موظف، مسؤول التدريب، مدير النظام)</li>
+                  <li>القسم (نفس الاسم الموجود في النظام)</li>
+                  <li>المسمى الوظيفي</li>
+                </ul>
+                <p className="text-xs text-slate-500 mt-1">
+                  تأكد أن الصف الأول يحتوي على عناوين الأعمدة كما هو موضح أعلاه، وأن الملف محفوظ بصيغة CSV.
+                </p>
+              </div>
+
+              <div>
+                <label className="label">ملف CSV</label>
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={(e) => setBulkFile(e.target.files[0] || null)}
+                  className="block w-full text-sm text-slate-700 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
+                />
+              </div>
+
+              {bulkResult && (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm space-y-2">
+                  <p className="font-medium text-slate-800">نتيجة الاستيراد:</p>
+                  <p>إجمالي الصفوف: {bulkResult.totalRows}</p>
+                  <p className="text-emerald-700">
+                    تم إنشاء: {bulkResult.createdCount} مستخدم
+                  </p>
+                  <p className="text-amber-700">
+                    تم تخطي: {bulkResult.skippedCount} صف
+                  </p>
+                  {bulkResult.errorCount > 0 && (
+                    <p className="text-danger-700">
+                      أخطاء: {bulkResult.errorCount} صف
+                    </p>
+                  )}
+                  {(bulkResult.skipped?.length > 0 || bulkResult.errors?.length > 0) && (
+                    <details className="mt-2">
+                      <summary className="cursor-pointer text-primary-700 text-sm">
+                        عرض التفاصيل
+                      </summary>
+                      <div className="mt-2 space-y-1 max-h-40 overflow-y-auto text-xs">
+                        {bulkResult.skipped?.map((row) => (
+                          <div key={`skipped-${row.rowNumber}`} className="text-amber-700">
+                            صف {row.rowNumber}: {row.reason}
+                            {row.email && ` ( ${row.email} )`}
+                          </div>
+                        ))}
+                        {bulkResult.errors?.map((row) => (
+                          <div key={`error-${row.rowNumber}`} className="text-danger-700">
+                            صف {row.rowNumber}: {row.error}
+                            {row.email && ` ( ${row.email} )`}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowBulkModal(false)}
+                  className="btn btn-secondary flex-1"
+                  disabled={bulkUploading}
+                >
+                  إغلاق
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary flex-1"
+                  disabled={bulkUploading}
+                >
+                  {bulkUploading ? 'جاري الاستيراد...' : 'بدء الاستيراد'}
+                </button>
+              </div>
+            </form>
+          </Dialog.Panel>
+        </div>
+      </Dialog>
+
+      {/* Delete Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={showDeleteModal}
+        onClose={() => {
+          setShowDeleteModal(false);
+          setUserToDelete(null);
+        }}
+        onConfirm={confirmDelete}
+        title="تأكيد حذف المستخدم"
+        message={userToDelete ? `هل أنت متأكد من حذف المستخدم "${userToDelete.name_ar}"؟\n\nلا يمكن التراجع عن هذا الإجراء.` : ''}
+      />
     </div>
   );
 }

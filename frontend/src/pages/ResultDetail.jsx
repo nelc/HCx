@@ -4,17 +4,13 @@ import { motion } from 'framer-motion';
 import {
   ArrowRightIcon,
   ChartBarIcon,
-  CheckCircleIcon,
   ExclamationCircleIcon,
   AcademicCapIcon,
   SparklesIcon,
 } from '@heroicons/react/24/outline';
-import { Chart as ChartJS, RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend } from 'chart.js';
-import { Radar } from 'react-chartjs-2';
 import api from '../utils/api';
-import { formatDate, getSkillLevelLabel, getSkillLevelColor } from '../utils/helpers';
-
-ChartJS.register(RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
+import { formatDate } from '../utils/helpers';
+import WeightedScoreBreakdown from '../components/WeightedScoreBreakdown';
 
 export default function ResultDetail() {
   const { id } = useParams();
@@ -66,27 +62,11 @@ export default function ResultDetail() {
     );
   }
 
-  const skillScores = result.skill_scores || {};
-  const strengths = result.strengths || [];
-  const gaps = result.gaps || [];
-  const recommendations = result.recommendations || [];
-  const openTextAnalysis = result.open_text_analysis || {};
-
-  // Prepare radar chart data
-  const skillNames = Object.entries(skillScores).map(([, data]) => data?.name_ar || 'مهارة');
-  const skillValues = Object.values(skillScores).map(data => data?.score || 0);
+  const weightedBreakdown = result.weighted_breakdown || [];
+  const weightedTotals = result.weighted_totals || null;
   
-  const radarData = {
-    labels: skillNames.slice(0, 8),
-    datasets: [{
-      label: 'مستوى المهارة',
-      data: skillValues.slice(0, 8),
-      backgroundColor: 'rgba(14, 57, 94, 0.2)',
-      borderColor: 'rgba(14, 57, 94, 0.8)',
-      borderWidth: 2,
-      pointBackgroundColor: 'rgba(14, 57, 94, 1)',
-    }],
-  };
+  // Use weighted percentage as the actual score (not the stored overall_score which might be based on skills)
+  const actualScore = weightedTotals?.weighted_percentage || result.overall_score || 0;
 
   return (
     <div className="space-y-6">
@@ -109,241 +89,103 @@ export default function ResultDetail() {
       >
         <div 
           className="h-2"
-          style={{ backgroundColor: result.domain_color || '#0e395e' }}
+          style={{ backgroundColor: result.domain_color || '#502390' }}
         ></div>
         <div className="p-8 text-center">
           <div 
             className="w-32 h-32 rounded-full flex items-center justify-center mx-auto mb-4"
             style={{ 
-              backgroundColor: (result.domain_color || '#0e395e') + '20',
-              border: `4px solid ${result.domain_color || '#0e395e'}`
+              backgroundColor: (result.domain_color || '#502390') + '20',
+              border: `4px solid ${result.domain_color || '#502390'}`
             }}
           >
             <span 
               className="text-4xl font-bold"
-              style={{ color: result.domain_color || '#0e395e' }}
+              style={{ color: result.domain_color || '#502390' }}
             >
-              {result.overall_score}%
+              {actualScore}%
             </span>
           </div>
           <h2 className="text-xl font-semibold text-slate-800 mb-2">النتيجة الإجمالية</h2>
           <p className="text-slate-500 max-w-md mx-auto">
-            {result.overall_score >= 70 
+            {actualScore >= 70 
               ? 'أداء ممتاز! أنت تمتلك مهارات قوية في هذا المجال'
-              : result.overall_score >= 40
+              : actualScore >= 40
                 ? 'أداء جيد مع وجود فرص للتحسين'
                 : 'هناك حاجة لتطوير المهارات في هذا المجال'}
           </p>
         </div>
       </motion.div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Skills Radar */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="card p-6"
-        >
-          <h3 className="text-lg font-semibold text-primary-700 mb-4">ملف المهارات</h3>
-          {skillNames.length > 0 ? (
-            <div className="aspect-square">
-              <Radar
-                data={radarData}
-                options={{
-                  responsive: true,
-                  maintainAspectRatio: true,
-                  scales: {
-                    r: {
-                      beginAtZero: true,
-                      max: 100,
-                      ticks: { display: false },
-                      grid: { color: 'rgba(0,0,0,0.05)' },
-                      pointLabels: {
-                        font: { family: 'IBM Plex Sans Arabic', size: 11 },
-                        color: '#475569'
-                      }
-                    }
-                  },
-                  plugins: {
-                    legend: { display: false }
-                  }
-                }}
-              />
-            </div>
-          ) : (
-            <div className="aspect-square flex items-center justify-center text-slate-400">
-              لا توجد بيانات كافية
-            </div>
-          )}
-        </motion.div>
+      {/* Weighted Score Breakdown */}
+      {weightedBreakdown.length > 0 && (
+        <WeightedScoreBreakdown breakdown={weightedBreakdown} totals={weightedTotals} />
+      )}
 
-        {/* Skill Details */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="card p-6"
-        >
-          <h3 className="text-lg font-semibold text-primary-700 mb-4">تفاصيل المهارات</h3>
-          <div className="space-y-4">
-            {Object.entries(skillScores).map(([skillId, data], index) => (
-              <div key={skillId} className="flex items-center gap-3">
-                <div className="flex-1">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm font-medium text-slate-700">{data?.name_ar || `مهارة ${index + 1}`}</span>
-                    <span className={`badge text-xs ${getSkillLevelColor(data?.level)}`}>
-                      {getSkillLevelLabel(data?.level)}
-                    </span>
-                  </div>
-                  <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                    <div 
-                      className={`h-full rounded-full transition-all duration-500 ${
-                        data?.level === 'high' ? 'bg-success-500' :
-                        data?.level === 'medium' ? 'bg-warning-500' : 'bg-danger-500'
-                      }`}
-                      style={{ width: `${data?.score || 0}%` }}
-                    ></div>
-                  </div>
-                </div>
-                <span className="text-sm font-semibold text-slate-600 w-12 text-left">
-                  {data?.score || 0}%
-                </span>
-              </div>
-            ))}
-          </div>
-        </motion.div>
-      </div>
-
-      {/* Strengths & Gaps */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Strengths */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="card p-6"
-        >
-          <div className="flex items-center gap-2 mb-4">
-            <CheckCircleIcon className="w-6 h-6 text-success-600" />
-            <h3 className="text-lg font-semibold text-primary-700">نقاط القوة</h3>
-          </div>
-          {strengths.length > 0 ? (
-            <div className="space-y-3">
-              {strengths.map((strength, index) => (
-                <div key={index} className="p-3 bg-success-50 rounded-xl">
-                  <p className="font-medium text-success-800">{strength.skill_name_ar}</p>
-                  <p className="text-sm text-success-600 mt-1">{strength.description_ar}</p>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-slate-500 text-center py-4">لم يتم تحديد نقاط قوة محددة</p>
-          )}
-        </motion.div>
-
-        {/* Gaps */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4 }}
-          className="card p-6"
-        >
-          <div className="flex items-center gap-2 mb-4">
-            <ExclamationCircleIcon className="w-6 h-6 text-warning-600" />
-            <h3 className="text-lg font-semibold text-primary-700">فجوات المهارات</h3>
-          </div>
-          {gaps.length > 0 ? (
-            <div className="space-y-3">
-              {gaps.map((gap, index) => (
-                <div key={index} className="p-3 bg-warning-50 rounded-xl">
-                  <div className="flex items-center justify-between mb-1">
-                    <p className="font-medium text-warning-800">{gap.skill_name_ar}</p>
-                    <span className="text-xs text-warning-600 bg-warning-100 px-2 py-1 rounded">
-                      فجوة {gap.gap_score}%
-                    </span>
-                  </div>
-                  <p className="text-sm text-warning-600">{gap.description_ar}</p>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-slate-500 text-center py-4">لا توجد فجوات محددة</p>
-          )}
-        </motion.div>
-      </div>
-
-      {/* AI Summary */}
-      {(result.ai_summary_ar || result.ai_recommendations_ar) && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.5 }}
-          className="card p-6"
-        >
-          <div className="flex items-center gap-2 mb-4">
+      {/* Action Items and Next Steps */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.7 }}
+        className="card p-6 bg-gradient-to-br from-primary-50 to-accent-50 border-primary-100"
+      >
+        <div className="flex items-start gap-4">
+          <div className="p-3 bg-white rounded-xl shadow-sm">
             <SparklesIcon className="w-6 h-6 text-primary-600" />
-            <h3 className="text-lg font-semibold text-primary-700">تحليل الذكاء الاصطناعي</h3>
           </div>
-          
-          {result.ai_summary_ar && (
-            <div className="mb-4">
-              <h4 className="font-medium text-slate-700 mb-2">الملخص</h4>
-              <p className="text-slate-600 leading-relaxed">{result.ai_summary_ar}</p>
-            </div>
-          )}
-          
-          {result.ai_recommendations_ar && (
-            <div>
-              <h4 className="font-medium text-slate-700 mb-2">التوصيات</h4>
-              <p className="text-slate-600 leading-relaxed">{result.ai_recommendations_ar}</p>
-            </div>
-          )}
-        </motion.div>
-      )}
-
-      {/* Training Recommendations */}
-      {recommendations.length > 0 && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.6 }}
-          className="card p-6"
-        >
-          <div className="flex items-center gap-2 mb-4">
-            <AcademicCapIcon className="w-6 h-6 text-primary-600" />
-            <h3 className="text-lg font-semibold text-primary-700">التوصيات التدريبية</h3>
-          </div>
-          
-          <div className="space-y-4">
-            {recommendations.map((rec, index) => (
-              <div key={index} className="p-4 bg-slate-50 rounded-xl border border-slate-100">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h4 className="font-medium text-slate-800">{rec.course_title_ar}</h4>
-                    <p className="text-sm text-slate-500 mt-1">{rec.course_description_ar}</p>
-                    {rec.skill_name_ar && (
-                      <span className="inline-block mt-2 text-xs text-primary-600 bg-primary-50 px-2 py-1 rounded">
-                        {rec.skill_name_ar}
-                      </span>
-                    )}
+          <div className="flex-1">
+            <h3 className="text-lg font-semibold text-primary-700 mb-3">الخطوات التالية الموصى بها</h3>
+            <div className="space-y-3">
+              {actualScore < 70 && (
+                <div className="flex items-start gap-3 p-3 bg-white rounded-lg">
+                  <div className="p-2 bg-warning-50 rounded-lg">
+                    <ExclamationCircleIcon className="w-5 h-5 text-warning-600" />
                   </div>
-                  {rec.course_url && (
-                    <a
-                      href={rec.course_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="btn btn-secondary text-sm py-2 shrink-0"
-                    >
-                      عرض الدورة
-                    </a>
-                  )}
+                  <div>
+                    <p className="font-medium text-slate-800">ركز على تحسين مهاراتك</p>
+                    <p className="text-sm text-slate-600 mt-1">
+                      راجع الأسئلة التي حصلت فيها على درجات منخفضة وحاول تطوير هذه المهارات
+                    </p>
+                  </div>
+                </div>
+              )}
+              
+              <div className="flex items-start gap-3 p-3 bg-white rounded-lg">
+                <div className="p-2 bg-accent-50 rounded-lg">
+                  <AcademicCapIcon className="w-5 h-5 text-accent-600" />
+                </div>
+                <div>
+                  <p className="font-medium text-slate-800">ابحث عن الدورات التدريبية المناسبة</p>
+                  <p className="text-sm text-slate-600 mt-1">
+                    استكشف الدورات التدريبية المتاحة لتحسين مهاراتك
+                  </p>
                 </div>
               </div>
-            ))}
+              
+              <div className="flex items-start gap-3 p-3 bg-white rounded-lg">
+                <div className="p-2 bg-primary-50 rounded-lg">
+                  <ChartBarIcon className="w-5 h-5 text-primary-600" />
+                </div>
+                <div>
+                  <p className="font-medium text-slate-800">تابع تطورك في لوحة التحليلات</p>
+                  <p className="text-sm text-slate-600 mt-1">
+                    راجع رحلة التعلم ومصفوفة الكفاءات لرؤية تقدمك
+                  </p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Link to="/analytics" className="btn btn-primary text-sm">
+                عرض التحليلات الشاملة
+              </Link>
+              <Link to="/recommendations" className="btn btn-secondary text-sm">
+                جميع التوصيات
+              </Link>
+            </div>
           </div>
-        </motion.div>
-      )}
+        </div>
+      </motion.div>
     </div>
   );
 }

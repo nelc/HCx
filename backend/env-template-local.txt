@@ -1,0 +1,19 @@
+PORT=3001
+
+# Local Development Configuration (with Cloud SQL Proxy)
+# Start the proxy first: ./start-cloud-sql-proxy.sh
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=Hrxuser
+DB_PASS=lkdfvsdSDD565?
+DB_NAME=hrx
+
+# Frontend URL (for CORS)
+FRONTEND_URL=http://localhost:5173
+
+# Environment
+NODE_ENV=development
+
+# JWT Secret
+JWT_SECRET=your-secret-key-here
+

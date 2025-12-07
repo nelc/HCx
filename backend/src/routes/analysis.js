@@ -10,8 +10,8 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// Analyze assignment responses
-router.post('/assignment/:assignmentId', authenticate, isTrainingOfficer, async (req, res) => {
+// Reusable function to analyze assignment responses
+async function analyzeAssignment(assignmentId) {
   try {
     // Get assignment details
     const assignment = await db.query(`
@@ -23,10 +23,10 @@ router.post('/assignment/:assignmentId', authenticate, isTrainingOfficer, async 
       JOIN users u ON ta.user_id = u.id
       LEFT JOIN training_domains td ON t.domain_id = td.id
       WHERE ta.id = $1 AND ta.status = 'completed'
-    `, [req.params.assignmentId]);
+    `, [assignmentId]);
     
     if (assignment.rows.length === 0) {
-      return res.status(404).json({ error: 'Completed assignment not found' });
+      throw new Error('Completed assignment not found');
     }
     
     const assignmentData = assignment.rows[0];
@@ -34,64 +34,121 @@ router.post('/assignment/:assignmentId', authenticate, isTrainingOfficer, async 
     // Check if already analyzed
     const existingAnalysis = await db.query(
       'SELECT id FROM analysis_results WHERE assignment_id = $1',
-      [req.params.assignmentId]
+      [assignmentId]
     );
     
     if (existingAnalysis.rows.length > 0) {
-      return res.status(400).json({ error: 'Assignment already analyzed', analysis_id: existingAnalysis.rows[0].id });
+      return { already_analyzed: true, analysis_id: existingAnalysis.rows[0].id };
     }
     
-    // Get responses with questions and skills
+    // Get responses with questions (without question-level skills)
     const responses = await db.query(`
       SELECT r.*, 
-             q.question_ar, q.question_en, q.question_type, q.options, q.weight,
-             s.id as skill_id, s.name_ar as skill_name_ar, s.name_en as skill_name_en, s.weight as skill_weight
+             q.question_ar, q.question_en, q.question_type, q.options, q.weight
       FROM responses r
       JOIN questions q ON r.question_id = q.id
-      LEFT JOIN skills s ON q.skill_id = s.id
       WHERE r.assignment_id = $1
       ORDER BY q.order_index
-    `, [req.params.assignmentId]);
+    `, [assignmentId]);
     
-    // Calculate skill scores
-    const skillScores = {};
+    // Get test-level skills (targeted skills for this test)
+    const testSkills = await db.query(`
+      SELECT s.id as skill_id, s.name_ar as skill_name_ar, s.name_en as skill_name_en, 
+             s.weight as skill_weight
+      FROM test_skills ts
+      JOIN skills s ON ts.skill_id = s.id
+      WHERE ts.test_id = $1
+    `, [assignmentData.test_id]);
+    
+    console.log(`Test has ${testSkills.rows.length} targeted skills`);
+    
+    // Calculate overall test performance first
+    let totalScore = 0;
+    let totalMaxScore = 0;
     const openTextResponses = [];
     
+    // Log for debugging
+    console.log(`Processing ${responses.rows.length} responses for assignment ${assignmentId}`);
+    
     for (const response of responses.rows) {
-      if (response.skill_id) {
-        if (!skillScores[response.skill_id]) {
-          skillScores[response.skill_id] = {
-            skill_id: response.skill_id,
-            name_ar: response.skill_name_ar,
-            name_en: response.skill_name_en,
-            total_score: 0,
-            max_score: 0,
-            count: 0,
-            weight: response.skill_weight || 1
-          };
-        }
+      // Calculate score for each response (question)
+      let score = 0;
+      let maxScore = 10;
+      let hasValidScore = false;
         
-        let score = 0;
-        let maxScore = 10;
-        
+        // Use stored score if available (calculated when response was saved)
+        // Otherwise fall back to calculating from response_value for backward compatibility
         switch (response.question_type) {
           case 'mcq':
-            score = response.score || 0;
-            maxScore = Math.max(...(response.options || []).map(o => o.score || 0)) || 10;
+            if (response.score !== null && response.score !== undefined) {
+              score = parseFloat(response.score) || 0;
+              hasValidScore = true;
+            } else if (response.response_value) {
+              // Fallback: try to find score from options
+              if (response.options && Array.isArray(response.options)) {
+                const selectedOption = response.options.find(o => o.value === response.response_value);
+                if (selectedOption) {
+                  score = parseFloat(selectedOption.score) || 0;
+                  hasValidScore = true;
+                }
+              }
+            }
+            // For MCQ, max score is the highest option score
+            if (response.options && Array.isArray(response.options) && response.options.length > 0) {
+              const optionScores = response.options.map(o => parseFloat(o.score) || 0);
+              maxScore = Math.max(...optionScores, 10);
+            } else {
+              maxScore = 10;
+            }
             break;
           case 'likert_scale':
-            score = parseInt(response.response_value) || 0;
-            maxScore = 5;
+            // Likert scores are normalized to 0-10 scale when saved
+            if (response.score !== null && response.score !== undefined) {
+              score = parseFloat(response.score);
+              hasValidScore = true;
+            } else if (response.response_value) {
+              // Fallback: normalize 1-5 to 0-10 scale
+              const likertValue = parseInt(response.response_value);
+              if (likertValue >= 1 && likertValue <= 5) {
+                score = ((likertValue - 1) / 4) * 10;
+                hasValidScore = true;
+              }
+            }
+            maxScore = 10; // Normalized max score
             break;
           case 'self_rating':
-            score = parseInt(response.response_value) || 0;
+            // Self-rating scores are stored as 1-10 when saved
+            if (response.score !== null && response.score !== undefined) {
+              score = parseFloat(response.score);
+              hasValidScore = true;
+            } else if (response.response_value) {
+              // Fallback
+              const ratingValue = parseInt(response.response_value);
+              if (ratingValue >= 1 && ratingValue <= 10) {
+                score = ratingValue;
+                hasValidScore = true;
+              }
+            }
             maxScore = 10;
             break;
+          default:
+            // For other types, try to use stored score
+            if (response.score !== null && response.score !== undefined) {
+              score = parseFloat(response.score) || 0;
+              hasValidScore = true;
+            }
+            maxScore = 10;
         }
         
-        skillScores[response.skill_id].total_score += score * (response.weight || 1);
-        skillScores[response.skill_id].max_score += maxScore * (response.weight || 1);
-        skillScores[response.skill_id].count++;
+      // Add to overall totals
+      if (hasValidScore) {
+        const weight = response.weight || 1;
+        totalScore += score * weight;
+        totalMaxScore += maxScore * weight;
+        
+        console.log(`Question ${response.question_id} (${response.question_type}): score ${score}/${maxScore} (weight: ${weight})`);
+      } else {
+        console.warn(`Response ${response.id} for question ${response.question_id} (${response.question_type}) has no valid score`);
       }
       
       if (response.question_type === 'open_text' && response.response_value) {
@@ -103,18 +160,30 @@ router.post('/assignment/:assignmentId', authenticate, isTrainingOfficer, async 
       }
     }
     
-    // Calculate final skill levels
+    // Calculate overall test performance percentage
+    const overallPercentage = totalMaxScore > 0 ? (totalScore / totalMaxScore) * 100 : 0;
+    const overallScore = Math.round(overallPercentage);
+    
+    console.log(`Overall test score: ${overallScore}% (${totalScore}/${totalMaxScore})`);
+    console.log(`Applying score to ${testSkills.rows.length} test-level skills`);
+    
+    // Apply the overall test performance to all test-level skills
     const skillResults = {};
     const strengths = [];
     const gaps = [];
     
-    for (const [skillId, data] of Object.entries(skillScores)) {
-      const percentage = data.max_score > 0 ? (data.total_score / data.max_score) * 100 : 0;
+    if (testSkills.rows.length === 0) {
+      console.warn('⚠️ WARNING: Test has no targeted skills linked! Cannot generate skill-based recommendations.');
+      console.warn('   Please link skills to this test in test_skills table to enable recommendations.');
+    }
+    
+    for (const testSkill of testSkills.rows) {
+      const percentage = overallPercentage; // Apply same percentage to all skills
       let level = 'low';
       if (percentage >= 70) level = 'high';
       else if (percentage >= 40) level = 'medium';
       
-      skillResults[skillId] = {
+      skillResults[testSkill.skill_id] = {
         score: Math.round(percentage),
         level,
         gap_percentage: Math.round(100 - percentage)
@@ -122,43 +191,40 @@ router.post('/assignment/:assignmentId', authenticate, isTrainingOfficer, async 
       
       if (level === 'high') {
         strengths.push({
-          skill_id: skillId,
-          skill_name_ar: data.name_ar,
-          skill_name_en: data.name_en,
+          skill_id: testSkill.skill_id,
+          skill_name_ar: testSkill.skill_name_ar,
+          skill_name_en: testSkill.skill_name_en,
           score: Math.round(percentage),
-          description_ar: `أداء ممتاز في ${data.name_ar}`,
-          description_en: `Excellent performance in ${data.name_en}`
+          description_ar: `أداء ممتاز في ${testSkill.skill_name_ar}`,
+          description_en: `Excellent performance in ${testSkill.skill_name_en}`
         });
       } else if (level === 'low') {
         gaps.push({
-          skill_id: skillId,
-          skill_name_ar: data.name_ar,
-          skill_name_en: data.name_en,
+          skill_id: testSkill.skill_id,
+          skill_name_ar: testSkill.skill_name_ar,
+          skill_name_en: testSkill.skill_name_en,
           gap_score: Math.round(100 - percentage),
+          gap_percentage: Math.round(100 - percentage),
           priority: 1,
-          description_ar: `يحتاج تطوير في ${data.name_ar}`,
-          description_en: `Needs development in ${data.name_en}`
+          description_ar: `يحتاج تطوير في ${testSkill.skill_name_ar}`,
+          description_en: `Needs development in ${testSkill.skill_name_en}`
         });
       } else {
         gaps.push({
-          skill_id: skillId,
-          skill_name_ar: data.name_ar,
-          skill_name_en: data.name_en,
+          skill_id: testSkill.skill_id,
+          skill_name_ar: testSkill.skill_name_ar,
+          skill_name_en: testSkill.skill_name_en,
           gap_score: Math.round(100 - percentage),
+          gap_percentage: Math.round(100 - percentage),
           priority: 2,
-          description_ar: `يمكن تحسين ${data.name_ar}`,
-          description_en: `Can improve ${data.name_en}`
+          description_ar: `يمكن تحسين ${testSkill.skill_name_ar}`,
+          description_en: `Can improve ${testSkill.skill_name_en}`
         });
       }
     }
     
     // Sort gaps by priority
     gaps.sort((a, b) => a.priority - b.priority || b.gap_score - a.gap_score);
-    
-    // Calculate overall score
-    const overallScore = Object.values(skillResults).length > 0
-      ? Math.round(Object.values(skillResults).reduce((sum, s) => sum + s.score, 0) / Object.values(skillResults).length)
-      : 0;
     
     // AI Analysis for open text responses
     let openTextAnalysis = { themes: [], sentiments: [], key_insights: [], concerns: [] };
@@ -177,8 +243,10 @@ Domain: ${assignmentData.domain_name_en}
 Open-text responses:
 ${openTextResponses.map((r, i) => `Q${i+1}: ${r.question_en}\nA: ${r.response}`).join('\n\n')}
 
-Skill Assessment Results:
-${Object.entries(skillScores).map(([id, s]) => `- ${s.name_en}: ${skillResults[id]?.score || 0}% (${skillResults[id]?.level || 'N/A'})`).join('\n')}
+Overall Test Score: ${overallScore}%
+
+Skill Assessment Results (Test-level skills):
+${testSkills.rows.map(s => `- ${s.skill_name_en}: ${skillResults[s.skill_id]?.score || 0}% (${skillResults[s.skill_id]?.level || 'N/A'})`).join('\n')}
 
 Please provide:
 1. Key themes from open-text responses
@@ -241,7 +309,7 @@ Format response as JSON with this structure:
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING *
     `, [
-      req.params.assignmentId,
+      assignmentId,
       assignmentData.user_id,
       assignmentData.test_id,
       overallScore,
@@ -304,16 +372,32 @@ Format response as JSON with this structure:
               '/my-results')
     `, [assignmentData.user_id]);
     
-    res.json({
+    return {
       analysis: analysisResult.rows[0],
       skill_results: skillResults,
       strengths,
       gaps,
       open_text_analysis: openTextAnalysis
-    });
+    };
   } catch (error) {
     console.error('Analysis error:', error);
-    res.status(500).json({ error: 'Failed to analyze responses' });
+    throw error;
+  }
+}
+
+// Analyze assignment responses (admin endpoint - kept for backward compatibility)
+router.post('/assignment/:assignmentId', authenticate, isTrainingOfficer, async (req, res) => {
+  try {
+    const result = await analyzeAssignment(req.params.assignmentId);
+    
+    if (result.already_analyzed) {
+      return res.status(400).json({ error: 'Assignment already analyzed', analysis_id: result.analysis_id });
+    }
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Analysis error:', error);
+    res.status(500).json({ error: error.message || 'Failed to analyze responses' });
   }
 });
 
@@ -355,9 +439,72 @@ router.get('/:id', authenticate, async (req, res) => {
       ORDER BY tr.priority
     `, [req.params.id]);
     
+    // Get weighted breakdown
+    const weightedBreakdown = await db.query(`
+      SELECT 
+        q.id,
+        q.question_ar,
+        q.question_en,
+        q.question_type,
+        q.weight,
+        q.options,
+        r.score,
+        r.is_correct,
+        s.name_ar as skill_name_ar,
+        s.name_en as skill_name_en
+      FROM responses r
+      JOIN questions q ON r.question_id = q.id
+      LEFT JOIN skills s ON q.skill_id = s.id
+      WHERE r.assignment_id = $1
+      ORDER BY q.order_index
+    `, [result.rows[0].assignment_id]);
+    
+    const breakdown = weightedBreakdown.rows.map(q => {
+      const weight = parseFloat(q.weight) || 1;
+      let maxScore = 10;
+      
+      if (q.question_type === 'mcq' && q.options && Array.isArray(q.options) && q.options.length > 0) {
+        const optionScores = q.options.map(o => parseFloat(o.score) || 0);
+        maxScore = Math.max(...optionScores, 10);
+      } else if (q.question_type === 'likert_scale' || q.question_type === 'self_rating') {
+        maxScore = 10;
+      }
+      
+      const rawScore = parseFloat(q.score) || 0;
+      const weightedScore = rawScore * weight;
+      const weightedMaxScore = maxScore * weight;
+      
+      return {
+        question_id: q.id,
+        question_ar: q.question_ar,
+        question_en: q.question_en,
+        question_type: q.question_type,
+        skill_name_ar: q.skill_name_ar,
+        skill_name_en: q.skill_name_en,
+        weight: weight,
+        raw_score: Math.round(rawScore * 10) / 10,
+        max_score: maxScore,
+        weighted_score: Math.round(weightedScore * 10) / 10,
+        weighted_max_score: Math.round(weightedMaxScore * 10) / 10,
+        percentage: maxScore > 0 ? Math.round((rawScore / maxScore) * 100) : 0,
+        is_correct: q.is_correct
+      };
+    });
+    
+    // Calculate totals
+    const totalWeightedScore = breakdown.reduce((sum, q) => sum + q.weighted_score, 0);
+    const totalWeightedMaxScore = breakdown.reduce((sum, q) => sum + q.weighted_max_score, 0);
+    
     res.json({
       ...result.rows[0],
-      recommendations: recommendations.rows
+      recommendations: recommendations.rows,
+      weighted_breakdown: breakdown,
+      weighted_totals: {
+        total_weighted_score: Math.round(totalWeightedScore * 10) / 10,
+        total_weighted_max_score: Math.round(totalWeightedMaxScore * 10) / 10,
+        weighted_percentage: totalWeightedMaxScore > 0 ? 
+          Math.round((totalWeightedScore / totalWeightedMaxScore) * 100) : 0
+      }
     });
   } catch (error) {
     console.error('Get analysis error:', error);
@@ -402,9 +549,72 @@ router.get('/assignment/:assignmentId', authenticate, async (req, res) => {
       ORDER BY tr.priority
     `, [result.rows[0].id]);
     
+    // Get weighted breakdown
+    const weightedBreakdown = await db.query(`
+      SELECT 
+        q.id,
+        q.question_ar,
+        q.question_en,
+        q.question_type,
+        q.weight,
+        q.options,
+        r.score,
+        r.is_correct,
+        s.name_ar as skill_name_ar,
+        s.name_en as skill_name_en
+      FROM responses r
+      JOIN questions q ON r.question_id = q.id
+      LEFT JOIN skills s ON q.skill_id = s.id
+      WHERE r.assignment_id = $1
+      ORDER BY q.order_index
+    `, [req.params.assignmentId]);
+    
+    const breakdown = weightedBreakdown.rows.map(q => {
+      const weight = parseFloat(q.weight) || 1;
+      let maxScore = 10;
+      
+      if (q.question_type === 'mcq' && q.options && Array.isArray(q.options) && q.options.length > 0) {
+        const optionScores = q.options.map(o => parseFloat(o.score) || 0);
+        maxScore = Math.max(...optionScores, 10);
+      } else if (q.question_type === 'likert_scale' || q.question_type === 'self_rating') {
+        maxScore = 10;
+      }
+      
+      const rawScore = parseFloat(q.score) || 0;
+      const weightedScore = rawScore * weight;
+      const weightedMaxScore = maxScore * weight;
+      
+      return {
+        question_id: q.id,
+        question_ar: q.question_ar,
+        question_en: q.question_en,
+        question_type: q.question_type,
+        skill_name_ar: q.skill_name_ar,
+        skill_name_en: q.skill_name_en,
+        weight: weight,
+        raw_score: Math.round(rawScore * 10) / 10,
+        max_score: maxScore,
+        weighted_score: Math.round(weightedScore * 10) / 10,
+        weighted_max_score: Math.round(weightedMaxScore * 10) / 10,
+        percentage: maxScore > 0 ? Math.round((rawScore / maxScore) * 100) : 0,
+        is_correct: q.is_correct
+      };
+    });
+    
+    // Calculate totals
+    const totalWeightedScore = breakdown.reduce((sum, q) => sum + q.weighted_score, 0);
+    const totalWeightedMaxScore = breakdown.reduce((sum, q) => sum + q.weighted_max_score, 0);
+    
     res.json({
       ...result.rows[0],
-      recommendations: recommendations.rows
+      recommendations: recommendations.rows,
+      weighted_breakdown: breakdown,
+      weighted_totals: {
+        total_weighted_score: Math.round(totalWeightedScore * 10) / 10,
+        total_weighted_max_score: Math.round(totalWeightedMaxScore * 10) / 10,
+        weighted_percentage: totalWeightedMaxScore > 0 ? 
+          Math.round((totalWeightedScore / totalWeightedMaxScore) * 100) : 0
+      }
     });
   } catch (error) {
     console.error('Get analysis by assignment error:', error);
@@ -441,5 +651,581 @@ router.get('/user/:userId', authenticate, async (req, res) => {
   }
 });
 
+// Get comprehensive analytics for a user
+router.get('/analytics/:userId', authenticate, async (req, res) => {
+  try {
+    // Check authorization
+    if (req.user.role === 'employee' && req.params.userId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const userId = req.params.userId;
+
+    // Get all user's analyses with historical data
+    const analyses = await db.query(`
+      SELECT ar.*,
+             t.title_ar as test_title_ar,
+             t.title_en as test_title_en,
+             td.id as domain_id,
+             td.name_ar as domain_name_ar,
+             td.name_en as domain_name_en,
+             td.color as domain_color
+      FROM analysis_results ar
+      JOIN tests t ON ar.test_id = t.id
+      LEFT JOIN training_domains td ON t.domain_id = td.id
+      WHERE ar.user_id = $1
+      ORDER BY ar.analyzed_at ASC
+    `, [userId]);
+
+    if (analyses.rows.length === 0) {
+      return res.json({
+        total_assessments: 0,
+        overall_average: 0,
+        improvement_rate: 0,
+        skill_trends: [],
+        domain_performance: [],
+        strengths_overview: [],
+        priority_gaps: [],
+        learning_velocity: 0
+      });
+    }
+
+    // Calculate overall metrics
+    const totalAssessments = analyses.rows.length;
+    const overallAverage = Math.round(
+      analyses.rows.reduce((sum, a) => sum + (a.overall_score || 0), 0) / totalAssessments
+    );
+
+    // Calculate improvement rate (comparing first vs last 3 assessments)
+    let improvementRate = 0;
+    if (totalAssessments >= 2) {
+      const firstThree = analyses.rows.slice(0, Math.min(3, totalAssessments));
+      const lastThree = analyses.rows.slice(-Math.min(3, totalAssessments));
+      const firstAvg = firstThree.reduce((sum, a) => sum + (a.overall_score || 0), 0) / firstThree.length;
+      const lastAvg = lastThree.reduce((sum, a) => sum + (a.overall_score || 0), 0) / lastThree.length;
+      improvementRate = Math.round(lastAvg - firstAvg);
+    }
+
+    // Aggregate skill trends across all assessments
+    const skillTrends = {};
+    analyses.rows.forEach(analysis => {
+      const skillScores = analysis.skill_scores || {};
+      Object.entries(skillScores).forEach(([skillId, data]) => {
+        if (!skillTrends[skillId]) {
+          skillTrends[skillId] = {
+            skill_id: skillId,
+            name_ar: data.name_ar || 'مهارة',
+            name_en: data.name_en || 'Skill',
+            scores: [],
+            dates: [],
+            current_level: data.level,
+            trend: 'stable'
+          };
+        }
+        skillTrends[skillId].scores.push(data.score || 0);
+        skillTrends[skillId].dates.push(analysis.analyzed_at);
+      });
+    });
+
+    // Calculate trend direction for each skill
+    Object.values(skillTrends).forEach(skill => {
+      if (skill.scores.length >= 2) {
+        const recent = skill.scores.slice(-3).reduce((a, b) => a + b, 0) / Math.min(3, skill.scores.length);
+        const older = skill.scores.slice(0, 3).reduce((a, b) => a + b, 0) / Math.min(3, skill.scores.length);
+        const diff = recent - older;
+        skill.trend = diff > 5 ? 'improving' : diff < -5 ? 'declining' : 'stable';
+        skill.average_score = Math.round(skill.scores.reduce((a, b) => a + b, 0) / skill.scores.length);
+        skill.latest_score = skill.scores[skill.scores.length - 1];
+        skill.change = Math.round(diff);
+      } else {
+        skill.average_score = skill.scores[0] || 0;
+        skill.latest_score = skill.scores[0] || 0;
+        skill.change = 0;
+      }
+    });
+
+    // Domain performance aggregation
+    const domainPerformance = {};
+    analyses.rows.forEach(analysis => {
+      const domainId = analysis.domain_id;
+      if (domainId) {
+        if (!domainPerformance[domainId]) {
+          domainPerformance[domainId] = {
+            domain_id: domainId,
+            name_ar: analysis.domain_name_ar,
+            name_en: analysis.domain_name_en,
+            color: analysis.domain_color,
+            scores: [],
+            assessments_count: 0
+          };
+        }
+        domainPerformance[domainId].scores.push(analysis.overall_score || 0);
+        domainPerformance[domainId].assessments_count++;
+      }
+    });
+
+    Object.values(domainPerformance).forEach(domain => {
+      domain.average_score = Math.round(
+        domain.scores.reduce((a, b) => a + b, 0) / domain.scores.length
+      );
+      domain.latest_score = domain.scores[domain.scores.length - 1];
+      if (domain.scores.length >= 2) {
+        const change = domain.scores[domain.scores.length - 1] - domain.scores[0];
+        domain.trend = change > 5 ? 'improving' : change < -5 ? 'declining' : 'stable';
+      } else {
+        domain.trend = 'stable';
+      }
+    });
+
+    // Aggregate strengths (skills consistently high)
+    const strengthsMap = {};
+    analyses.rows.forEach(analysis => {
+      (analysis.strengths || []).forEach(strength => {
+        if (!strengthsMap[strength.skill_id]) {
+          strengthsMap[strength.skill_id] = {
+            skill_id: strength.skill_id,
+            skill_name_ar: strength.skill_name_ar,
+            skill_name_en: strength.skill_name_en,
+            count: 0,
+            avg_score: 0,
+            scores: []
+          };
+        }
+        strengthsMap[strength.skill_id].count++;
+        strengthsMap[strength.skill_id].scores.push(strength.score || 0);
+      });
+    });
+
+    const strengthsOverview = Object.values(strengthsMap).map(s => ({
+      ...s,
+      avg_score: Math.round(s.scores.reduce((a, b) => a + b, 0) / s.scores.length),
+      consistency: Math.round((s.count / totalAssessments) * 100)
+    })).sort((a, b) => b.consistency - a.consistency);
+
+    // Aggregate priority gaps (skills consistently low or declining)
+    const gapsMap = {};
+    analyses.rows.forEach(analysis => {
+      (analysis.gaps || []).forEach(gap => {
+        if (!gapsMap[gap.skill_id]) {
+          gapsMap[gap.skill_id] = {
+            skill_id: gap.skill_id,
+            skill_name_ar: gap.skill_name_ar,
+            skill_name_en: gap.skill_name_en,
+            count: 0,
+            avg_gap: 0,
+            gaps: [],
+            priority_sum: 0
+          };
+        }
+        gapsMap[gap.skill_id].count++;
+        gapsMap[gap.skill_id].gaps.push(gap.gap_score || 0);
+        gapsMap[gap.skill_id].priority_sum += gap.priority || 1;
+      });
+    });
+
+    const priorityGaps = Object.values(gapsMap).map(g => ({
+      ...g,
+      avg_gap: Math.round(g.gaps.reduce((a, b) => a + b, 0) / g.gaps.length),
+      persistence: Math.round((g.count / totalAssessments) * 100),
+      priority: g.priority_sum / g.count
+    })).sort((a, b) => b.persistence - a.persistence || b.avg_gap - a.avg_gap).slice(0, 10);
+
+    // Calculate learning velocity (improvement over time)
+    let learningVelocity = 0;
+    if (totalAssessments >= 2) {
+      const timeSpan = new Date(analyses.rows[analyses.rows.length - 1].analyzed_at) - 
+                       new Date(analyses.rows[0].analyzed_at);
+      const months = timeSpan / (1000 * 60 * 60 * 24 * 30);
+      learningVelocity = months > 0 ? Math.round((improvementRate / months) * 10) / 10 : 0;
+    }
+
+    // Get peer comparison (same department, anonymized)
+    let peerComparison = null;
+    const user = await db.query('SELECT department_id FROM users WHERE id = $1', [userId]);
+    if (user.rows.length > 0 && user.rows[0].department_id) {
+      const peerStats = await db.query(`
+        SELECT 
+          AVG(ar.overall_score) as avg_score,
+          COUNT(DISTINCT ar.user_id) as peer_count
+        FROM analysis_results ar
+        JOIN users u ON ar.user_id = u.id
+        WHERE u.department_id = $1 AND ar.user_id != $2
+      `, [user.rows[0].department_id, userId]);
+      
+      if (peerStats.rows[0].peer_count > 0) {
+        peerComparison = {
+          department_average: Math.round(peerStats.rows[0].avg_score || 0),
+          peer_count: parseInt(peerStats.rows[0].peer_count),
+          percentile: overallAverage > peerStats.rows[0].avg_score ? 
+            Math.min(95, Math.round(60 + (overallAverage - peerStats.rows[0].avg_score))) : 
+            Math.max(5, Math.round(50 - (peerStats.rows[0].avg_score - overallAverage)))
+        };
+      }
+    }
+
+    res.json({
+      total_assessments: totalAssessments,
+      overall_average: overallAverage,
+      improvement_rate: improvementRate,
+      learning_velocity: learningVelocity,
+      skill_trends: Object.values(skillTrends).sort((a, b) => b.latest_score - a.latest_score),
+      domain_performance: Object.values(domainPerformance).sort((a, b) => b.average_score - a.average_score),
+      strengths_overview: strengthsOverview,
+      priority_gaps: priorityGaps,
+      peer_comparison: peerComparison,
+      timeline: analyses.rows.map(a => ({
+        date: a.analyzed_at,
+        test_title_ar: a.test_title_ar,
+        domain_name_ar: a.domain_name_ar,
+        score: a.overall_score,
+        domain_color: a.domain_color
+      }))
+    });
+  } catch (error) {
+    console.error('Get analytics error:', error);
+    res.status(500).json({ error: 'Failed to get analytics' });
+  }
+});
+
+// Get skill progression for a specific skill
+router.get('/skill-progression/:userId/:skillId', authenticate, async (req, res) => {
+  try {
+    // Check authorization
+    if (req.user.role === 'employee' && req.params.userId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const { userId, skillId } = req.params;
+
+    // Get skill profile
+    const skillProfile = await db.query(`
+      SELECT esp.*,
+             s.name_ar as skill_name_ar,
+             s.name_en as skill_name_en,
+             s.description_ar,
+             s.description_en,
+             td.name_ar as domain_name_ar,
+             td.name_en as domain_name_en
+      FROM employee_skill_profiles esp
+      JOIN skills s ON esp.skill_id = s.id
+      LEFT JOIN training_domains td ON s.domain_id = td.id
+      WHERE esp.user_id = $1 AND esp.skill_id = $2
+    `, [userId, skillId]);
+
+    // Get historical assessments for this skill
+    const history = await db.query(`
+      SELECT ar.id, ar.analyzed_at, ar.overall_score, ar.skill_scores,
+             t.title_ar as test_title_ar,
+             td.name_ar as domain_name_ar
+      FROM analysis_results ar
+      JOIN tests t ON ar.test_id = t.id
+      LEFT JOIN training_domains td ON t.domain_id = td.id
+      WHERE ar.user_id = $1
+      ORDER BY ar.analyzed_at ASC
+    `, [userId]);
+
+    const progression = [];
+    history.rows.forEach(analysis => {
+      const skillScores = analysis.skill_scores || {};
+      if (skillScores[skillId]) {
+        progression.push({
+          date: analysis.analyzed_at,
+          score: skillScores[skillId].score,
+          level: skillScores[skillId].level,
+          test_title_ar: analysis.test_title_ar,
+          domain_name_ar: analysis.domain_name_ar
+        });
+      }
+    });
+
+    // Get recommendations for this skill
+    const recommendations = await db.query(`
+      SELECT tr.*
+      FROM training_recommendations tr
+      WHERE tr.user_id = $1 AND tr.skill_id = $2 AND tr.status != 'skipped'
+      ORDER BY tr.priority, tr.created_at DESC
+      LIMIT 5
+    `, [userId, skillId]);
+
+    res.json({
+      profile: skillProfile.rows[0] || null,
+      progression,
+      recommendations: recommendations.rows
+    });
+  } catch (error) {
+    console.error('Get skill progression error:', error);
+    res.status(500).json({ error: 'Failed to get skill progression' });
+  }
+});
+
+// Get competency matrix (skills vs proficiency levels)
+router.get('/competency-matrix/:userId', authenticate, async (req, res) => {
+  try {
+    // Check authorization
+    if (req.user.role === 'employee' && req.params.userId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const userId = req.params.userId;
+
+    // Get ALL active domains and their skills
+    const allSkills = await db.query(`
+      SELECT 
+        td.id as domain_id,
+        td.name_ar as domain_name_ar,
+        td.name_en as domain_name_en,
+        td.color as domain_color,
+        s.id as skill_id,
+        s.name_ar as skill_name_ar,
+        s.name_en as skill_name_en,
+        s.weight as skill_weight
+      FROM training_domains td
+      LEFT JOIN skills s ON s.domain_id = td.id
+      WHERE td.is_active = true
+      ORDER BY td.name_ar, s.name_ar
+    `);
+
+    // Get user's analysis results with skill scores
+    const analyses = await db.query(`
+      SELECT 
+        ar.skill_scores,
+        ar.analyzed_at
+      FROM analysis_results ar
+      WHERE ar.user_id = $1
+      ORDER BY ar.analyzed_at DESC
+    `, [userId]);
+
+    // Calculate average scores for each skill across all tests
+    const skillScoresMap = {};
+    
+    console.log(`[CompetencyMatrix] User ${userId}: Found ${analyses.rows.length} test results`);
+    
+    analyses.rows.forEach((analysis, idx) => {
+      console.log(`[CompetencyMatrix] Test ${idx + 1}:`, {
+        analyzed_at: analysis.analyzed_at,
+        has_skill_scores: !!analysis.skill_scores,
+        skill_scores_type: typeof analysis.skill_scores
+      });
+      
+      if (analysis.skill_scores) {
+        // skill_scores is already a JS object (PostgreSQL JSONB is automatically parsed)
+        const skillScoresObj = typeof analysis.skill_scores === 'string' 
+          ? JSON.parse(analysis.skill_scores) 
+          : analysis.skill_scores;
+        
+        console.log(`[CompetencyMatrix] Test ${idx + 1} skill_scores:`, Object.keys(skillScoresObj).length, 'skills');
+        
+        Object.entries(skillScoresObj).forEach(([skillId, scoreData]) => {
+          if (!skillScoresMap[skillId]) {
+            skillScoresMap[skillId] = {
+              scores: [],
+              totalScore: 0,
+              count: 0
+            };
+          }
+          // scoreData is an object with { score, level, gap_percentage }
+          const score = typeof scoreData === 'object' ? (scoreData.score || 0) : 0;
+          console.log(`[CompetencyMatrix] Skill ${skillId}: score=${score}`);
+          skillScoresMap[skillId].scores.push(score);
+          skillScoresMap[skillId].totalScore += score;
+          skillScoresMap[skillId].count += 1;
+        });
+      } else {
+        console.log(`[CompetencyMatrix] Test ${idx + 1}: No skill_scores found!`);
+      }
+    });
+    
+    console.log(`[CompetencyMatrix] Processed ${Object.keys(skillScoresMap).length} unique skills`);
+
+    // Calculate average for each skill
+    Object.keys(skillScoresMap).forEach(skillId => {
+      const data = skillScoresMap[skillId];
+      skillScoresMap[skillId].averageScore = Math.round(data.totalScore / data.count);
+    });
+
+    // Get employee skill profiles for level/trend data
+    const profiles = await db.query(`
+      SELECT 
+        esp.skill_id,
+        esp.current_level,
+        esp.target_level,
+        esp.improvement_trend
+      FROM employee_skill_profiles esp
+      WHERE esp.user_id = $1
+    `, [userId]);
+
+    // Create a map of skill profiles
+    const profilesMap = {};
+    profiles.rows.forEach(profile => {
+      profilesMap[profile.skill_id] = profile;
+    });
+
+    // Group skills by domain
+    const domains = {};
+    allSkills.rows.forEach(row => {
+      const domainId = row.domain_id;
+      
+      if (!domains[domainId]) {
+        domains[domainId] = {
+          domain_id: domainId,
+          domain_name_ar: row.domain_name_ar,
+          domain_name_en: row.domain_name_en,
+          domain_color: row.domain_color || '#502390',
+          skills: []
+        };
+      }
+
+      // Only add skills that exist (not null from LEFT JOIN)
+      if (row.skill_id) {
+        const skillId = row.skill_id;
+        const profile = profilesMap[skillId] || {};
+        const scoreData = skillScoresMap[skillId];
+        
+        domains[domainId].skills.push({
+          skill_id: skillId,
+          name_ar: row.skill_name_ar,
+          name_en: row.skill_name_en,
+          current_level: profile.current_level || null,
+          target_level: profile.target_level || null,
+          score: scoreData ? scoreData.averageScore : null,
+          trend: profile.improvement_trend || null,
+          weight: row.skill_weight || 1.0,
+          gap: profile.target_level && profile.current_level ? 
+            ['low', 'medium', 'high'].indexOf(profile.target_level) - 
+            ['low', 'medium', 'high'].indexOf(profile.current_level) : 0
+        });
+      }
+    });
+
+    // Calculate domain-level metrics
+    let totalSkillsAssessed = 0;
+    Object.values(domains).forEach(domain => {
+      const skills = domain.skills;
+      const assessedSkills = skills.filter(s => s.score !== null);
+      
+      // Calculate proficiency (average score) from assessed skills only
+      if (assessedSkills.length > 0) {
+        domain.proficiency = Math.round(
+          assessedSkills.reduce((sum, s) => sum + s.score, 0) / assessedSkills.length
+        );
+      } else {
+        domain.proficiency = 0;
+      }
+      
+      domain.skills_at_target = skills.filter(s => 
+        s.current_level === s.target_level || 
+        (s.current_level === 'high' && !s.target_level)
+      ).length;
+      
+      domain.total_skills = skills.length;
+      domain.assessed_skills = assessedSkills.length;
+      
+      // Readiness = Average score of assessed skills in the domain (same as proficiency)
+      domain.readiness = domain.proficiency;
+      
+      totalSkillsAssessed += assessedSkills.length;
+    });
+
+    const domainsList = Object.values(domains);
+    const totalSkills = domainsList.reduce((sum, d) => sum + d.total_skills, 0);
+    const totalDomains = domainsList.length;
+
+    console.log(`[CompetencyMatrix] Response summary: ${totalDomains} domains, ${totalSkills} total skills, ${totalSkillsAssessed} assessed`);
+
+    res.json({
+      domains: domainsList,
+      summary: {
+        total_domains: totalDomains,
+        total_skills: totalSkills,
+        skills_assessed: totalSkillsAssessed,
+        skills_not_assessed: totalSkills - totalSkillsAssessed,
+        skills_at_target: domainsList.reduce((sum, d) => sum + d.skills_at_target, 0),
+        overall_readiness: totalDomains > 0 ? Math.round(
+          domainsList.reduce((sum, d) => sum + d.readiness, 0) / totalDomains
+        ) : 0
+      }
+    });
+  } catch (error) {
+    console.error('Get competency matrix error:', error);
+    res.status(500).json({ error: 'Failed to get competency matrix' });
+  }
+});
+
+// Debug endpoint to check competency matrix data
+router.get('/debug-competency/:userId', authenticate, async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    
+    // Check authorization
+    if (req.user.role === 'employee' && userId !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    const debug = {};
+    
+    // Get analyses
+    const analyses = await db.query(`
+      SELECT 
+        ar.id,
+        ar.assignment_id,
+        ar.overall_score,
+        ar.skill_scores,
+        t.title_ar
+      FROM analysis_results ar
+      JOIN tests t ON ar.test_id = t.id
+      WHERE ar.user_id = $1
+      ORDER BY ar.analyzed_at DESC
+      LIMIT 5
+    `, [userId]);
+    
+    debug.analyses_count = analyses.rows.length;
+    debug.analyses = analyses.rows.map(a => ({
+      id: a.id,
+      title: a.title_ar,
+      overall_score: a.overall_score,
+      skill_count: a.skill_scores ? Object.keys(a.skill_scores).length : 0,
+      skill_scores: a.skill_scores
+    }));
+    
+    // Get latest assignment
+    if (analyses.rows.length > 0) {
+      const latestAnalysis = analyses.rows[0];
+      
+      const questions = await db.query(`
+        SELECT 
+          q.id,
+          q.question_ar,
+          q.skill_id,
+          s.name_ar as skill_name,
+          r.score
+        FROM responses r
+        JOIN questions q ON r.question_id = q.id
+        LEFT JOIN skills s ON q.skill_id = s.id
+        WHERE r.assignment_id = $1
+      `, [latestAnalysis.assignment_id]);
+      
+      debug.latest_test = {
+        title: latestAnalysis.title_ar,
+        questions_count: questions.rows.length,
+        questions_with_skill_id: questions.rows.filter(q => q.skill_id).length,
+        questions_without_skill_id: questions.rows.filter(q => !q.skill_id).length,
+        questions: questions.rows.map(q => ({
+          id: q.id,
+          question: q.question_ar.substring(0, 100),
+          has_skill_id: !!q.skill_id,
+          skill_name: q.skill_name,
+          score: q.score
+        }))
+      };
+    }
+    
+    res.json(debug);
+  } catch (error) {
+    console.error('Debug competency error:', error);
+    res.status(500).json({ error: 'Failed to debug' });
+  }
+});
+
 module.exports = router;
+module.exports.analyzeAssignment = analyzeAssignment;
 

@@ -103,7 +103,26 @@ router.get('/my', authenticate, async (req, res) => {
     query += ' ORDER BY ta.due_date ASC, ta.created_at DESC';
     
     const result = await db.query(query, params);
-    res.json(result.rows);
+    
+    // Fetch target skills for each test
+    const assignments = await Promise.all(
+      result.rows.map(async (assignment) => {
+        const skillsResult = await db.query(`
+          SELECT s.id, s.name_ar, s.name_en
+          FROM test_skills ts
+          JOIN skills s ON ts.skill_id = s.id
+          WHERE ts.test_id = $1
+          ORDER BY s.name_ar
+        `, [assignment.test_id]);
+        
+        return {
+          ...assignment,
+          target_skills: skillsResult.rows
+        };
+      })
+    );
+    
+    res.json(assignments);
   } catch (error) {
     console.error('Get my assignments error:', error);
     res.status(500).json({ error: 'Failed to get assignments' });

@@ -142,6 +142,7 @@ export default function TakeTest() {
   const [timeRemaining, setTimeRemaining] = useState(null);
   const [startTime, setStartTime] = useState(null);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [hasError, setHasError] = useState(false);
 
   useEffect(() => {
     fetchAssignment();
@@ -166,7 +167,11 @@ export default function TakeTest() {
     return () => clearInterval(interval);
   }, [assignment, startTime]);
 
-  const fetchAssignment = async () => {
+  const fetchAssignment = async (retryCount = 0) => {
+    const maxRetries = 2;
+    const retryDelay = 1000; // 1 second
+    let shouldNavigateAway = false;
+    
     try {
       const response = await api.get(`/assignments/${id}`);
       setAssignment(response.data);
@@ -180,7 +185,16 @@ export default function TakeTest() {
       
       // Fetch questions
       const questionsRes = await api.get(`/questions/test/${response.data.test_id}`);
-      setQuestions(questionsRes.data || []);
+      const fetchedQuestions = questionsRes.data || [];
+      
+      if (fetchedQuestions.length === 0) {
+        toast.error('هذا التقييم لا يحتوي على أسئلة');
+        setLoading(false);
+        setTimeout(() => navigate('/assessments'), 100);
+        return;
+      }
+      
+      setQuestions(fetchedQuestions);
       
       // Fetch existing responses
       const responsesRes = await api.get(`/responses/assignment/${id}`);
@@ -189,11 +203,39 @@ export default function TakeTest() {
         existingResponses[r.question_id] = r.response_value;
       });
       setResponses(existingResponses);
-    } catch (error) {
-      toast.error('فشل في تحميل التقييم');
-      navigate('/assessments');
-    } finally {
       setLoading(false);
+    } catch (error) {
+      console.error('Failed to fetch assignment:', error);
+      
+      // Retry on network errors (when backend might be starting up)
+      const isNetworkError = error.message === 'Network Error' || 
+                            error.code === 'ECONNREFUSED' || 
+                            error.code === 'ERR_NETWORK' ||
+                            !error.response;
+      
+      if (isNetworkError && retryCount < maxRetries) {
+        console.log(`Retrying... (${retryCount + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, retryDelay * (retryCount + 1)));
+        return fetchAssignment(retryCount + 1);
+      }
+      
+      // Show error only if all retries failed
+      const errorMessage = error.response?.status === 404 
+        ? 'التقييم غير موجود' 
+        : error.response?.status === 403
+        ? 'ليس لديك صلاحية للوصول إلى هذا التقييم'
+        : isNetworkError
+        ? 'فشل الاتصال بالخادم. يرجى التحقق من اتصال الإنترنت أو المحاولة مرة أخرى'
+        : 'فشل في تحميل التقييم';
+      
+      setHasError(true);
+      setLoading(false);
+      toast.error(errorMessage);
+      
+      // Navigate away after showing error
+      setTimeout(() => {
+        navigate('/assessments');
+      }, 1500);
     }
   };
 
@@ -217,12 +259,16 @@ export default function TakeTest() {
     try {
       const timeSpent = startTime ? Math.floor((new Date() - startTime) / 1000) : 0;
       
-      await api.post(`/responses/submit/${id}`, {
+      const response = await api.post(`/responses/submit/${id}`, {
         time_spent_seconds: timeSpent
       });
       
-      toast.success('تم إرسال التقييم بنجاح');
-      navigate('/my-results');
+      toast.success('تم إرسال التقييم بنجاح!', { duration: 2000 });
+      
+      // Navigate to immediate results page with weighted breakdown
+      setTimeout(() => {
+        navigate(`/test-results/${id}`);
+      }, 1000);
     } catch (error) {
       toast.error('فشل في إرسال التقييم');
       setSubmitting(false);
@@ -239,12 +285,23 @@ export default function TakeTest() {
   const progress = ((currentIndex + 1) / questions.length) * 100;
   const answeredCount = Object.keys(responses).length;
 
-  if (loading) {
+  if (loading || hasError) {
     return (
       <div className="min-h-[60vh] flex items-center justify-center">
         <div className="text-center">
-          <div className="w-12 h-12 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-slate-600">جاري تحميل التقييم...</p>
+          {!hasError ? (
+            <>
+              <div className="w-12 h-12 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin mx-auto mb-4"></div>
+              <p className="text-slate-600">جاري تحميل التقييم...</p>
+            </>
+          ) : (
+            <>
+              <div className="w-16 h-16 bg-danger-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                <ExclamationTriangleIcon className="w-8 h-8 text-danger-600" />
+              </div>
+              <p className="text-slate-600">جاري إعادة التوجيه...</p>
+            </>
+          )}
         </div>
       </div>
     );

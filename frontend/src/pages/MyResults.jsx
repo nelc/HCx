@@ -145,7 +145,7 @@ export default function MyResults() {
               >
                 <div 
                   className="h-1"
-                  style={{ backgroundColor: result.domain_color || '#0e395e' }}
+                  style={{ backgroundColor: result.domain_color || '#502390' }}
                 ></div>
                 
                 <div className="p-6">
@@ -153,11 +153,11 @@ export default function MyResults() {
                     {/* Score */}
                     <div 
                       className="w-20 h-20 rounded-2xl flex items-center justify-center shrink-0"
-                      style={{ backgroundColor: (result.domain_color || '#0e395e') + '20' }}
+                      style={{ backgroundColor: (result.domain_color || '#502390') + '20' }}
                     >
                       <span 
                         className="text-3xl font-bold"
-                        style={{ color: result.domain_color || '#0e395e' }}
+                        style={{ color: result.domain_color || '#502390' }}
                       >
                         {result.overall_score}%
                       </span>

@@ -53,7 +53,7 @@ router.post('/', authenticate, isTrainingOfficer, [
   body('test_id').isUUID(),
   body('question_type').isIn(['mcq', 'open_text', 'likert_scale', 'self_rating']),
   body('question_ar').notEmpty(),
-  body('question_en').notEmpty()
+  body('question_en').optional()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);

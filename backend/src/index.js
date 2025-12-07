@@ -17,6 +17,9 @@ const analysisRoutes = require('./routes/analysis');
 const recommendationsRoutes = require('./routes/recommendations');
 const dashboardRoutes = require('./routes/dashboard');
 const notificationsRoutes = require('./routes/notifications');
+const cvImportRoutes = require('./routes/cvImport');
+const resultsOverviewRoutes = require('./routes/results-overview');
+const coursesRoutes = require('./routes/courses');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -43,6 +46,9 @@ app.use('/api/analysis', analysisRoutes);
 app.use('/api/recommendations', recommendationsRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/notifications', notificationsRoutes);
+app.use('/api/cv-import', cvImportRoutes);
+app.use('/api/results-overview', resultsOverviewRoutes);
+app.use('/api/courses', coursesRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -59,16 +65,18 @@ if (process.env.NODE_ENV === 'production') {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  console.error('Global error handler:', err.message);
+  console.error('Stack:', err.stack);
   res.status(500).json({ 
     error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? err.message : undefined
+    message: process.env.NODE_ENV === 'development' ? err.message : undefined,
+    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
   });
 });
 
 app.listen(PORT, () => {
   console.log(`
-  🚀 HRx Server running on port ${PORT}
+  🚀 HCx Server running on port ${PORT}
   
   📍 API Endpoints:
      - Auth:           /api/auth
@@ -84,6 +92,9 @@ app.listen(PORT, () => {
      - Recommendations:/api/recommendations
      - Dashboard:      /api/dashboard
      - Notifications:  /api/notifications
+     - CV Import:      /api/cv-import
+     - Results Overview:/api/results-overview
+     - Courses:        /api/courses
      - Health:         /api/health
   `);
 });

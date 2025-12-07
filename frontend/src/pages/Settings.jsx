@@ -1,16 +1,280 @@
 import { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   UserCircleIcon,
   KeyIcon,
   BellIcon,
   GlobeAltIcon,
   BriefcaseIcon,
+  ChevronDownIcon,
+  DocumentArrowUpIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import api from '../utils/api';
+import api, { getCVImportHistory } from '../utils/api';
 import useAuthStore from '../store/authStore';
 import { getRoleLabel } from '../utils/helpers';
+import CVImportModal from '../components/CVImportModal';
+
+// Static skills data organized by subjects
+const SKILLS_DATA = [
+  {
+    id: 'thinking',
+    subject: 'التفكير والتحليل',
+    color: 'bg-slate-600',
+    skills: [
+      'التحليل النقدي',
+      'حل المشكلات',
+      'اتخاذ القرار',
+      'التفكير الاستراتيجي',
+      'التحليل المنطقي',
+    ],
+  },
+  {
+    id: 'communication',
+    subject: 'الاتصال',
+    color: 'bg-blue-500',
+    skills: [
+      'التواصل الشفهي والكتابي',
+      'إعداد التقارير',
+      'العرض والإلقاء',
+      'بناء العلاقات',
+      'التفاوض',
+    ],
+  },
+  {
+    id: 'work-skills',
+    subject: 'مهارات العمل',
+    color: 'bg-indigo-500',
+    skills: [
+      'العمل الجماعي',
+      'إدارة الوقت',
+      'إدارة الأولويات',
+      'الالتزام والانضباط',
+      'التعلم السريع والتكيف',
+    ],
+  },
+  {
+    id: 'project-management',
+    subject: 'إدارة المشاريع',
+    color: 'bg-orange-500',
+    skills: [
+      'إدارة المشاريع (PMI / Agile / Scrum)',
+      'إدارة النطاق والتكلفة والجودة',
+      'إدارة المخاطر',
+      'إدارة أصحاب المصلحة',
+      'كتابة خطط المشاريع',
+      'إدارة الجدولة (Gantt, Critical Path)',
+      'مؤشرات الأداء للمشاريع (KPIs)',
+      'إدارة PMO',
+    ],
+  },
+  {
+    id: 'finance',
+    subject: 'المالية والمحاسبة',
+    color: 'bg-yellow-500',
+    skills: [
+      'التحليل المالي',
+      'إعداد الميزانيات',
+      'التوقعات المالية',
+      'التقارير المالية',
+      'تحليل التكاليف',
+      'إدارة النقد',
+      'التدقيق الداخلي',
+      'إدارة المخاطر المالية',
+      'IFRS / SOCPA',
+      'التسويات البنكية',
+    ],
+  },
+  {
+    id: 'tech',
+    subject: 'التقنية والتحول الرقمي',
+    color: 'bg-blue-600',
+    skills: [
+      'تطوير البرمجيات',
+      'هندسة البنية المؤسسية',
+      'أمن المعلومات',
+      'إدارة قواعد البيانات',
+      'إدارة الأنظمة',
+      'إدارة الشبكات',
+      'DevOps',
+      'Cloud Computing',
+      'تحليل الأنظمة',
+      'هندسة الحلول',
+      'اختبار البرمجيات QA',
+      'إدارة المنتجات الرقمية',
+    ],
+  },
+  {
+    id: 'hr',
+    subject: 'الموارد البشرية',
+    color: 'bg-red-500',
+    skills: [
+      'تخطيط القوى العاملة',
+      'الاستقطاب والاختيار',
+      'إدارة الأداء',
+      'التدريب والتطوير',
+      'التعويضات والمزايا',
+      'إدارة العلاقات العمالية',
+      'الاستشارات الوظيفية',
+      'تطوير القادة',
+      'إدارة المواهب',
+      'تحليل الوظائف والجدارات',
+    ],
+  },
+  {
+    id: 'procurement',
+    subject: 'العقود والمشتريات',
+    color: 'bg-purple-500',
+    skills: [
+      'إدارة سلسلة الإمداد',
+      'إعداد العقود',
+      'تحليل العروض',
+      'التقييم الفني والمالي',
+      'التفاوض التجاري',
+      'اللائحة الموحدة للمشتريات الحكومية',
+      'Vendor Management',
+      'إدارة المناقصات',
+      'التخطيط الشرائي',
+    ],
+  },
+  {
+    id: 'legal',
+    subject: 'القانونية',
+    color: 'bg-gray-600',
+    skills: [
+      'الصياغة القانونية',
+      'المراجعة والامتثال',
+      'تحليل المخاطر القانونية',
+      'إعداد اللوائح والسياسات',
+      'الترافع وحل النزاعات',
+      'قانون العمل',
+      'قانون الشركات',
+      'الملكية الفكرية',
+      'التعاقدات الحكومية',
+      'حوكمة الأنظمة',
+    ],
+  },
+  {
+    id: 'data-ai',
+    subject: 'البيانات والذكاء الاصطناعي',
+    color: 'bg-green-500',
+    skills: [
+      'تحليل البيانات',
+      'إدارة البيانات (Data Governance)',
+      'تصور البيانات (Power BI / Tableau)',
+      'النمذجة الإحصائية',
+      'علم البيانات',
+      'ML & AI Basics',
+      'إدارة جودة البيانات',
+      'بناء لوحات التحكم',
+      'RAG / Vector Databases',
+      'مهارات SQL / Python',
+    ],
+  },
+  {
+    id: 'warehouse',
+    subject: 'المستودعات وسلاسل الإمداد',
+    color: 'bg-amber-700',
+    skills: [
+      'إدارة المخزون',
+      'التخطيط اللوجستي',
+      'مراقبة الجودة',
+      'إدارة دورة التوريد',
+      'أنظمة المستودعات (WMS)',
+      'التحسين المستمر',
+    ],
+  },
+  {
+    id: 'strategy',
+    subject: 'التخطيط والاستراتيجية',
+    color: 'bg-orange-600',
+    skills: [
+      'بناء الاستراتيجيات',
+      'إدارة المبادرات والبرامج',
+      'إدارة الأداء الاستراتيجي',
+      'إعداد مؤشرات الأداء',
+      'تحليل البيئة الداخلية والخارجية',
+      'دراسات الجدوى',
+      'إدارة المحافظ',
+      'تحليل البيانات الاستراتيجية',
+      'بناء تقارير المتابعة التنفيذية',
+    ],
+  },
+  {
+    id: 'business',
+    subject: 'إدارة الأعمال والمنتجات',
+    color: 'bg-sky-600',
+    skills: [
+      'نماذج الأعمال',
+      'تحليل السوق',
+      'إدارة المنتج Product Management',
+      'تصميم تجربة المستخدم',
+      'تحليل العملاء',
+      'Journey Mapping',
+      'قيادة التطوير',
+      'دراسة المنافسين',
+      'بناء عروض القيمة',
+    ],
+  },
+  {
+    id: 'sales',
+    subject: 'المبيعات والعلاقات',
+    color: 'bg-emerald-500',
+    skills: [
+      'مهارات البيع الاحترافي',
+      'إدارة الحسابات (Account Management)',
+      'الإقناع والتفاوض',
+      'إدارة علاقات العملاء',
+      'بناء شبكات العلاقات',
+      'تحليل احتياجات العميل',
+      'متابعة الصفقات والإغلاقات',
+      'Customer Success',
+    ],
+  },
+  {
+    id: 'marketing',
+    subject: 'التسويق والاتصال المؤسسي',
+    color: 'bg-cyan-600',
+    skills: [
+      'التخطيط التسويقي',
+      'المحتوى والإبداع',
+      'إدارة الحملات',
+      'السوشيال ميديا',
+      'إدارة الهوية',
+      'قياس الأثر التسويقي',
+      'استراتيجيات العلامة التجارية',
+    ],
+  },
+  {
+    id: 'governance',
+    subject: 'التحليل والحوكمة والجودة',
+    color: 'bg-stone-600',
+    skills: [
+      'إدارة الجودة',
+      'التحسين المستمر',
+      'مراقبة الالتزام',
+      'التوثيق وصنع السياسات',
+      'إدارة المخاطر',
+      'التدقيق الداخلي',
+      'تقييم العمليات',
+    ],
+  },
+  {
+    id: 'leadership',
+    subject: 'القيادة والإدارة',
+    color: 'bg-violet-600',
+    skills: [
+      'اتخاذ القرار',
+      'إدارة التغيير',
+      'بناء فرق عالية الأداء',
+      'التفكير الاستراتيجي',
+      'إدارة الأزمات',
+      'الحوكمة',
+      'بناء الثقافة المؤسسية',
+      'قيادة الابتكار',
+    ],
+  },
+];
 
 export default function Settings() {
   const { user, updateUser } = useAuthStore();
@@ -26,14 +290,14 @@ export default function Settings() {
   // Employee Profile State
   const [employeeProfile, setEmployeeProfile] = useState({
     years_of_experience: '',
-    interests: [],
+    interests: [], // Array of skill identifiers like "thinking:التحليل النقدي"
     specialization_ar: '',
     specialization_en: '',
     last_qualification_ar: '',
     last_qualification_en: '',
     willing_to_change_career: null,
   });
-  const [allSkills, setAllSkills] = useState([]);
+  const [expandedSubjects, setExpandedSubjects] = useState({});
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
 
@@ -41,7 +305,6 @@ export default function Settings() {
   useEffect(() => {
     if (user?.role === 'employee' && activeTab === 'employee-profile') {
       fetchEmployeeProfile();
-      fetchSkills();
     }
   }, [activeTab, user]);
 
@@ -65,13 +328,11 @@ export default function Settings() {
     }
   };
 
-  const fetchSkills = async () => {
-    try {
-      const response = await api.get('/skills');
-      setAllSkills(response.data);
-    } catch (error) {
-      console.error('Failed to fetch skills:', error);
-    }
+  const toggleSubjectExpand = (subjectId) => {
+    setExpandedSubjects(prev => ({
+      ...prev,
+      [subjectId]: !prev[subjectId]
+    }));
   };
 
   const handleSaveProfile = async (e) => {
@@ -93,15 +354,25 @@ export default function Settings() {
     }
   };
 
-  const toggleSkillInterest = (skillId) => {
+  const toggleSkillInterest = (subjectId, skillName) => {
+    const skillKey = `${subjectId}:${skillName}`;
     setEmployeeProfile(prev => {
       const interests = prev.interests || [];
-      if (interests.includes(skillId)) {
-        return { ...prev, interests: interests.filter(id => id !== skillId) };
+      if (interests.includes(skillKey)) {
+        return { ...prev, interests: interests.filter(key => key !== skillKey) };
       } else {
-        return { ...prev, interests: [...interests, skillId] };
+        return { ...prev, interests: [...interests, skillKey] };
       }
     });
+  };
+
+  const isSkillSelected = (subjectId, skillName) => {
+    const skillKey = `${subjectId}:${skillName}`;
+    return (employeeProfile.interests || []).includes(skillKey);
+  };
+
+  const getSelectedCountForSubject = (subjectId) => {
+    return (employeeProfile.interests || []).filter(key => key.startsWith(`${subjectId}:`)).length;
   };
 
   const handleChangePassword = async (e) => {
@@ -139,9 +410,39 @@ export default function Settings() {
     }
   };
 
+  const [showCVModal, setShowCVModal] = useState(false);
+  const [cvImportHistory, setCvImportHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Fetch CV import history
+  useEffect(() => {
+    if (user?.role === 'employee' && activeTab === 'cv-import') {
+      fetchCVImportHistory();
+    }
+  }, [activeTab, user]);
+
+  const fetchCVImportHistory = async () => {
+    setLoadingHistory(true);
+    try {
+      const response = await getCVImportHistory();
+      setCvImportHistory(response.data || []);
+    } catch (error) {
+      console.error('Failed to fetch CV import history:', error);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  const handleCVImportSuccess = () => {
+    fetchCVImportHistory();
+  };
+
   const tabs = [
     { id: 'profile', label: 'الملف الشخصي', icon: UserCircleIcon },
-    ...(user?.role === 'employee' ? [{ id: 'employee-profile', label: 'ملف الموظف', icon: BriefcaseIcon }] : []),
+    ...(user?.role === 'employee' ? [
+      { id: 'employee-profile', label: 'الخبرة والاهتمامات', icon: BriefcaseIcon },
+      { id: 'cv-import', label: 'استيراد السيرة الذاتية', icon: DocumentArrowUpIcon },
+    ] : []),
     { id: 'security', label: 'الأمان', icon: KeyIcon },
   ];
 
@@ -273,7 +574,7 @@ export default function Settings() {
               animate={{ opacity: 1, y: 0 }}
               className="card p-6"
             >
-              <h2 className="text-lg font-semibold text-primary-700 mb-6">ملف الموظف</h2>
+              <h2 className="text-lg font-semibold text-primary-700 mb-6">الخبرة والاهتمامات</h2>
               
               {loadingProfile ? (
                 <div className="flex justify-center items-center py-12">
@@ -300,28 +601,73 @@ export default function Settings() {
                   <div>
                     <label className="label">الاهتمامات (المهارات والمواضيع) *</label>
                     <p className="text-sm text-slate-500 mb-3">اختر المجالات والمهارات التي تهتم بها</p>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-96 overflow-y-auto p-4 bg-slate-50 rounded-xl">
-                      {allSkills.length === 0 ? (
-                        <p className="text-slate-400 col-span-2 text-center py-4">لا توجد مهارات متاحة</p>
-                      ) : (
-                        allSkills.map((skill) => (
-                          <label
-                            key={skill.id}
-                            className="flex items-center gap-3 p-3 bg-white rounded-lg border border-slate-200 hover:border-primary-400 cursor-pointer transition-all"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={(employeeProfile.interests || []).includes(skill.id)}
-                              onChange={() => toggleSkillInterest(skill.id)}
-                              className="w-5 h-5 text-primary-600 rounded focus:ring-primary-500"
-                            />
-                            <div className="flex-1">
-                              <div className="font-medium text-slate-800">{skill.name_ar}</div>
-                              <div className="text-xs text-slate-500">{skill.domain_name_ar}</div>
-                            </div>
-                          </label>
-                        ))
-                      )}
+                    <div className="space-y-3 max-h-[600px] overflow-y-auto p-4 bg-slate-50 rounded-xl">
+                      {SKILLS_DATA.map((subject) => {
+                        const selectedCount = getSelectedCountForSubject(subject.id);
+                        const isExpanded = expandedSubjects[subject.id];
+                        
+                        return (
+                          <div key={subject.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                            {/* Subject Header */}
+                            <button
+                              type="button"
+                              onClick={() => toggleSubjectExpand(subject.id)}
+                              className="w-full flex items-center justify-between p-4 hover:bg-slate-50 transition-colors"
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className={`w-3 h-3 rounded-full ${subject.color}`}></div>
+                                <span className="font-semibold text-slate-800">{subject.subject}</span>
+                                {selectedCount > 0 && (
+                                  <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                    {selectedCount} مختارة
+                                  </span>
+                                )}
+                              </div>
+                              <ChevronDownIcon 
+                                className={`w-5 h-5 text-slate-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} 
+                              />
+                            </button>
+                            
+                            {/* Skills List */}
+                            <AnimatePresence>
+                              {isExpanded && (
+                                <motion.div
+                                  initial={{ height: 0, opacity: 0 }}
+                                  animate={{ height: 'auto', opacity: 1 }}
+                                  exit={{ height: 0, opacity: 0 }}
+                                  transition={{ duration: 0.2 }}
+                                  className="overflow-hidden"
+                                >
+                                  <div className="px-4 pb-4 pt-2 border-t border-slate-100">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                      {subject.skills.map((skill, skillIndex) => (
+                                        <label
+                                          key={skillIndex}
+                                          className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                                            isSkillSelected(subject.id, skill)
+                                              ? 'bg-primary-50 border-primary-400'
+                                              : 'bg-slate-50 border-slate-200 hover:border-primary-300'
+                                          }`}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={isSkillSelected(subject.id, skill)}
+                                            onChange={() => toggleSkillInterest(subject.id, skill)}
+                                            className="w-5 h-5 text-primary-600 rounded focus:ring-primary-500"
+                                          />
+                                          <span className={`text-sm ${isSkillSelected(subject.id, skill) ? 'text-primary-700 font-medium' : 'text-slate-700'}`}>
+                                            {skill}
+                                          </span>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </div>
+                        );
+                      })}
                     </div>
                     {employeeProfile.interests?.length > 0 && (
                       <p className="text-sm text-primary-600 mt-2">
@@ -386,7 +732,7 @@ export default function Settings() {
 
                   {/* Willing to Change Career */}
                   <div>
-                    <label className="label">هل أنت مستعد لتغيير مسارك الوظيفي؟ *</label>
+                    <label className="label">هل تنوي تغيير مسارك الوظيفي؟</label>
                     <div className="flex gap-4 mt-2">
                       <label className="flex items-center gap-2 cursor-pointer">
                         <input
@@ -426,6 +772,88 @@ export default function Settings() {
                   </div>
                 </form>
               )}
+            </motion.div>
+          )}
+
+          {/* CV Import Tab */}
+          {activeTab === 'cv-import' && user?.role === 'employee' && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="card p-6"
+            >
+              <h2 className="text-lg font-semibold text-primary-700 mb-6">استيراد من السيرة الذاتية</h2>
+              
+              <div className="space-y-6">
+                {/* Upload Section */}
+                <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center hover:border-primary-400 transition-colors">
+                  <DocumentArrowUpIcon className="w-12 h-12 text-slate-400 mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold text-slate-800 mb-2">رفع السيرة الذاتية</h3>
+                  <p className="text-slate-500 mb-4">
+                    قم برفع سيرتك الذاتية لاستخراج المهارات والخبرات تلقائياً
+                  </p>
+                  <p className="text-sm text-slate-400 mb-6">
+                    الصيغ المدعومة: PDF, DOC, DOCX (حد أقصى 5 ميجابايت)
+                  </p>
+                  <button
+                    onClick={() => setShowCVModal(true)}
+                    className="btn btn-primary"
+                  >
+                    رفع السيرة الذاتية
+                  </button>
+                </div>
+
+                {/* Import History */}
+                <div>
+                  <h3 className="font-semibold text-slate-800 mb-4">سجل الاستيراد</h3>
+                  {loadingHistory ? (
+                    <div className="text-center py-8">
+                      <div className="w-8 h-8 border-2 border-primary-200 border-t-primary-600 rounded-full animate-spin mx-auto mb-2"></div>
+                      <p className="text-sm text-slate-500">جاري التحميل...</p>
+                    </div>
+                  ) : cvImportHistory.length > 0 ? (
+                    <div className="space-y-2">
+                      {cvImportHistory.map((importRecord) => (
+                        <div
+                          key={importRecord.id}
+                          className="p-4 bg-slate-50 rounded-lg border border-slate-200"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="font-medium text-slate-800">{importRecord.file_name}</p>
+                              <p className="text-sm text-slate-500">
+                                {new Date(importRecord.created_at).toLocaleDateString('ar-SA', {
+                                  year: 'numeric',
+                                  month: 'long',
+                                  day: 'numeric',
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </p>
+                            </div>
+                            <div className="text-left">
+                              <p className="text-sm font-medium text-primary-700">
+                                {importRecord.imported_skills_count} مهارة
+                              </p>
+                              <span className={`text-xs px-2 py-1 rounded ${
+                                importRecord.status === 'completed' 
+                                  ? 'bg-success-100 text-success-700'
+                                  : 'bg-warning-100 text-warning-700'
+                              }`}>
+                                {importRecord.status === 'completed' ? 'مكتمل' : importRecord.status}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-slate-400">
+                      <p className="text-sm">لا توجد سجلات استيراد</p>
+                    </div>
+                  )}
+                </div>
+              </div>
             </motion.div>
           )}
 
@@ -484,6 +912,13 @@ export default function Settings() {
           )}
         </div>
       </div>
+
+      {/* CV Import Modal */}
+      <CVImportModal
+        isOpen={showCVModal}
+        onClose={() => setShowCVModal(false)}
+        onSuccess={handleCVImportSuccess}
+      />
     </div>
   );
 }
