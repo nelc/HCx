@@ -260,8 +260,8 @@ async function deleteNodeRelationships(label, idKey, idValue) {
     RETURN count(r) as deleted_count
   `;
   
-  return await makeRequest('GET', '/query', {
-    params: { query }
+  return await makeRequest('POST', '/query', {
+    data: { query }
   });
 }
 
@@ -275,8 +275,8 @@ async function deleteNode(label, idKey, idValue) {
     RETURN count(n) as deleted_count
   `;
   
-  return await makeRequest('GET', '/query', {
-    params: { query }
+  return await makeRequest('POST', '/query', {
+    data: { query }
   });
 }
 
@@ -322,17 +322,27 @@ async function getRecommendationsForUser(userId, limit = 10) {
       c.provider as provider,
       c.duration_hours as duration_hours,
       c.difficulty_level as difficulty_level,
+      c.subject as subject,
       c.price as price,
       matching_skills,
       recommendation_score,
       skill_coverage,
-      max_priority
+      max_priority,
+      c.extracted_skills as extracted_skills,
+      c.learning_outcomes as learning_outcomes,
+      c.target_audience as target_audience,
+      c.career_paths as career_paths,
+      c.industry_tags as industry_tags,
+      c.quality_indicators as quality_indicators,
+      c.summary_ar as summary_ar,
+      c.summary_en as summary_en,
+      c.enriched_at as enriched_at
     ORDER BY recommendation_score DESC, max_priority DESC, skill_coverage DESC
     LIMIT ${limit}
   `;
   
-  return await makeRequest('GET', '/query', {
-    params: { query }
+  return await makeRequest('POST', '/query', {
+    data: { query }
   });
 }
 
@@ -365,28 +375,48 @@ function buildDomainMatchConditions(domainAr, domainEn, domainId, synonymMap) {
 }
 
 /**
- * Get enhanced course recommendations for a user using graph traversal with domain and difficulty filtering
+ * Get valid difficulty levels for a user's proficiency category
+ * Users can take courses at their level or below
+ * Aligned with PROFICIENCY_LEVELS in userCategorizer.js
+ * @param {string} difficulty - The recommended difficulty level (beginner/intermediate/advanced)
+ * @returns {Array} Array of valid difficulty levels
+ */
+function getValidDifficultyLevels(difficulty) {
+  switch (difficulty) {
+    case 'advanced':
+      return ['advanced', 'intermediate', 'beginner'];
+    case 'intermediate':
+      return ['intermediate', 'beginner'];
+    case 'beginner':
+    default:
+      return ['beginner'];
+  }
+}
+
+/**
+ * Get enhanced course recommendations for a user using graph traversal
  * Matches User -NEEDS-> Skill <-TEACHES- Course
+ * The key matching is through skill relationships - if a course teaches a skill the user needs,
+ * it's relevant regardless of the course's subject category.
  * Filters courses by:
- * - Domain/subject match (course subject contains domain name or vice versa, including synonyms)
- * - Difficulty level based on skill proficiency (gap_score)
+ * - Skill match through graph relationships (Course -TEACHES-> Skill <-NEEDS- User)
+ * - Difficulty level based on skill proficiency (users can see courses at or below their level)
  * Returns courses ranked by relevance score (gap_score * relevance_score)
  */
 async function getEnhancedRecommendationsForUser(userId, skillRequirements, synonymMap = {}, limit = 10) {
-  // Build WHERE conditions for each skill with domain and difficulty matching
+  // Build WHERE conditions for each skill with flexible difficulty matching
+  // The key matching is through skill relationships: Course -TEACHES-> Skill <-NEEDS- User
+  // Domain matching is NOT required - if a course teaches the skill the user needs, it's relevant
+  // regardless of the course's subject category
   const skillConditions = Object.entries(skillRequirements).map(([skillId, req]) => {
-    const domainConditions = buildDomainMatchConditions(
-      req.domain_ar, 
-      req.domain_en, 
-      req.domain_id,
-      synonymMap
-    );
+    // Get all valid difficulty levels for this user's proficiency
+    const validLevels = getValidDifficultyLevels(req.difficulty);
+    const difficultyCondition = validLevels.map(level => `c.difficulty_level = '${level}'`).join(' OR ');
     
     return `(
       s.skill_id = '${skillId}' 
       AND n.gap_score > 0
-      AND (${domainConditions})
-      AND c.difficulty_level = '${req.difficulty}'
+      AND (${difficultyCondition})
     )`;
   }).join(' OR ');
 
@@ -420,15 +450,24 @@ async function getEnhancedRecommendationsForUser(userId, skillRequirements, syno
       matching_skills,
       recommendation_score,
       skill_coverage,
-      max_priority
+      max_priority,
+      c.extracted_skills as extracted_skills,
+      c.learning_outcomes as learning_outcomes,
+      c.target_audience as target_audience,
+      c.career_paths as career_paths,
+      c.industry_tags as industry_tags,
+      c.quality_indicators as quality_indicators,
+      c.summary_ar as summary_ar,
+      c.summary_en as summary_en,
+      c.enriched_at as enriched_at
     ORDER BY recommendation_score DESC, max_priority DESC, skill_coverage DESC
     LIMIT ${limit}
   `;
   
   console.log('📊 Enhanced Neo4j Query:', query);
   
-  return await makeRequest('GET', '/query', {
-    params: { query }
+  return await makeRequest('POST', '/query', {
+    data: { query }
   });
 }
 
@@ -442,8 +481,8 @@ async function nodeExists(label, idKey, idValue) {
   `;
   
   try {
-    const result = await makeRequest('GET', '/query', {
-      params: { query }
+    const result = await makeRequest('POST', '/query', {
+      data: { query }
     });
     return result && result.count > 0;
   } catch (error) {
@@ -481,6 +520,304 @@ async function syncAllSkills(skills) {
 }
 
 /**
+ * Search and list all courses from Neo4j database
+ * @param {Object} filters - Search filters
+ * @param {string} filters.search - Search term for name/description
+ * @param {string} filters.difficulty_level - Filter by difficulty (beginner/intermediate/advanced)
+ * @param {string} filters.language - Filter by language (ar/en)
+ * @param {string} filters.subject - Filter by subject/domain
+ * @param {string} filters.provider - Filter by provider
+ * @param {string} filters.skill - Filter by skill name (courses that teach this skill)
+ * @param {number} skip - Number of records to skip (for pagination)
+ * @param {number} limit - Maximum number of courses to return
+ * @returns {Promise<Object>} Object with courses array and total count
+ */
+async function searchCourses(filters = {}, skip = 0, limit = 20) {
+  const { search, difficulty_level, language, subject, provider, university, domain, skill } = filters;
+  
+  // Build WHERE conditions
+  const conditions = [];
+  
+  if (search) {
+    const escaped = search.replace(/'/g, "\\'");
+    conditions.push(`(
+      toLower(c.name_ar) CONTAINS toLower('${escaped}') OR
+      toLower(c.name_en) CONTAINS toLower('${escaped}') OR
+      toLower(c.description_ar) CONTAINS toLower('${escaped}') OR
+      toLower(c.description_en) CONTAINS toLower('${escaped}') OR
+      toLower(c.subject) CONTAINS toLower('${escaped}')
+    )`);
+  }
+  
+  if (difficulty_level) {
+    const escaped = difficulty_level.replace(/'/g, "\\'");
+    // Use case-insensitive match
+    conditions.push(`toLower(c.difficulty_level) = toLower('${escaped}')`);
+  }
+  
+  if (language) {
+    conditions.push(`c.language = '${language}'`);
+  }
+  
+  if (subject) {
+    const escaped = subject.replace(/'/g, "\\'");
+    // Use exact match since values come from database dropdown
+    conditions.push(`c.subject = '${escaped}'`);
+  }
+  
+  if (provider) {
+    const escaped = provider.replace(/'/g, "\\'");
+    conditions.push(`c.provider = '${escaped}'`);
+  }
+  
+  if (university) {
+    const escaped = university.replace(/'/g, "\\'");
+    conditions.push(`c.university = '${escaped}'`);
+  }
+  
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  
+  // Domain filter requires matching through relationship
+  const domainFilter = domain ? `
+    MATCH (c)-[:BELONGS_TO]->(d:Domain)
+    WHERE toLower(d.name_ar) CONTAINS toLower('${domain.replace(/'/g, "\\'")}') OR toLower(d.name_en) CONTAINS toLower('${domain.replace(/'/g, "\\'")}')
+  ` : '';
+  
+  // If filtering by skill or domain, use different query patterns
+  let query;
+  if (skill && domain) {
+    // Both skill and domain filters
+    const escapedSkill = skill.replace(/'/g, "\\'");
+    const escapedDomain = domain.replace(/'/g, "\\'");
+    query = `
+      MATCH (c:Course)-[t:TEACHES]->(s:Skill)
+      MATCH (c)-[:BELONGS_TO]->(d:Domain)
+      WHERE (toLower(s.name_ar) CONTAINS toLower('${escapedSkill}') OR toLower(s.name_en) CONTAINS toLower('${escapedSkill}'))
+      AND (toLower(d.name_ar) CONTAINS toLower('${escapedDomain}') OR toLower(d.name_en) CONTAINS toLower('${escapedDomain}'))
+      ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
+      WITH c, collect(DISTINCT {name_ar: s.name_ar, name_en: s.name_en, relevance: t.relevance_score}) as skills
+      RETURN 
+        c.course_id as course_id,
+        c.name_ar as name_ar,
+        c.name_en as name_en,
+        c.description_ar as description_ar,
+        c.description_en as description_en,
+        c.url as url,
+        c.provider as provider,
+        c.duration_hours as duration_hours,
+        c.difficulty_level as difficulty_level,
+        c.language as language,
+        c.subject as subject,
+        c.subtitle as subtitle,
+        c.university as university,
+        c.price as price,
+        skills
+      ORDER BY c.name_ar
+      SKIP ${skip}
+      LIMIT ${limit}
+    `;
+  } else if (skill) {
+    // Only skill filter
+    const escapedSkill = skill.replace(/'/g, "\\'");
+    query = `
+      MATCH (c:Course)-[t:TEACHES]->(s:Skill)
+      WHERE (toLower(s.name_ar) CONTAINS toLower('${escapedSkill}') OR toLower(s.name_en) CONTAINS toLower('${escapedSkill}'))
+      ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
+      WITH c, collect(DISTINCT {name_ar: s.name_ar, name_en: s.name_en, relevance: t.relevance_score}) as skills
+      RETURN 
+        c.course_id as course_id,
+        c.name_ar as name_ar,
+        c.name_en as name_en,
+        c.description_ar as description_ar,
+        c.description_en as description_en,
+        c.url as url,
+        c.provider as provider,
+        c.duration_hours as duration_hours,
+        c.difficulty_level as difficulty_level,
+        c.language as language,
+        c.subject as subject,
+        c.subtitle as subtitle,
+        c.university as university,
+        c.price as price,
+        skills
+      ORDER BY c.name_ar
+      SKIP ${skip}
+      LIMIT ${limit}
+    `;
+  } else if (domain) {
+    // Only domain filter
+    const escapedDomain = domain.replace(/'/g, "\\'");
+    query = `
+      MATCH (c:Course)-[:BELONGS_TO]->(d:Domain)
+      WHERE (toLower(d.name_ar) CONTAINS toLower('${escapedDomain}') OR toLower(d.name_en) CONTAINS toLower('${escapedDomain}'))
+      ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
+      OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
+      WITH c, collect(DISTINCT {name_ar: s.name_ar, name_en: s.name_en, relevance: t.relevance_score}) as skills
+      RETURN 
+        c.course_id as course_id,
+        c.name_ar as name_ar,
+        c.name_en as name_en,
+        c.description_ar as description_ar,
+        c.description_en as description_en,
+        c.url as url,
+        c.provider as provider,
+        c.duration_hours as duration_hours,
+        c.difficulty_level as difficulty_level,
+        c.language as language,
+        c.subject as subject,
+        c.subtitle as subtitle,
+        c.university as university,
+        c.price as price,
+        skills,
+        c.extracted_skills as extracted_skills,
+        c.learning_outcomes as learning_outcomes,
+        c.target_audience as target_audience,
+        c.career_paths as career_paths,
+        c.industry_tags as industry_tags,
+        c.summary_ar as summary_ar,
+        c.summary_en as summary_en,
+        c.quality_indicators as quality_indicators,
+        c.enriched_at as enriched_at
+      ORDER BY c.name_ar
+      SKIP ${skip}
+      LIMIT ${limit}
+    `;
+  } else {
+    // No skill or domain filter
+    query = `
+      MATCH (c:Course)
+      ${whereClause}
+      OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
+      WITH c, collect(DISTINCT {name_ar: s.name_ar, name_en: s.name_en, relevance: t.relevance_score}) as skills
+      RETURN 
+        c.course_id as course_id,
+        c.name_ar as name_ar,
+        c.name_en as name_en,
+        c.description_ar as description_ar,
+        c.description_en as description_en,
+        c.url as url,
+        c.provider as provider,
+        c.duration_hours as duration_hours,
+        c.difficulty_level as difficulty_level,
+        c.language as language,
+        c.subject as subject,
+        c.subtitle as subtitle,
+        c.university as university,
+        c.price as price,
+        skills,
+        c.extracted_skills as extracted_skills,
+        c.learning_outcomes as learning_outcomes,
+        c.target_audience as target_audience,
+        c.career_paths as career_paths,
+        c.industry_tags as industry_tags,
+        c.summary_ar as summary_ar,
+        c.summary_en as summary_en,
+        c.quality_indicators as quality_indicators,
+        c.enriched_at as enriched_at
+      ORDER BY c.name_ar
+      SKIP ${skip}
+      LIMIT ${limit}
+    `;
+  }
+  
+  console.log('🔍 Neo4j Course Search Query:', query);
+  
+  const result = await makeRequest('POST', '/query', {
+    data: { query }
+  });
+  
+  // Get total count (separate query)
+  let countQuery;
+  if (skill && domain) {
+    const escapedSkill = skill.replace(/'/g, "\\'");
+    const escapedDomain = domain.replace(/'/g, "\\'");
+    countQuery = `
+      MATCH (c:Course)-[t:TEACHES]->(s:Skill)
+      MATCH (c)-[:BELONGS_TO]->(d:Domain)
+      WHERE (toLower(s.name_ar) CONTAINS toLower('${escapedSkill}') OR toLower(s.name_en) CONTAINS toLower('${escapedSkill}'))
+      AND (toLower(d.name_ar) CONTAINS toLower('${escapedDomain}') OR toLower(d.name_en) CONTAINS toLower('${escapedDomain}'))
+      ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
+      RETURN count(DISTINCT c) as total
+    `;
+  } else if (skill) {
+    countQuery = `
+      MATCH (c:Course)-[t:TEACHES]->(s:Skill)
+      WHERE (toLower(s.name_ar) CONTAINS toLower('${skill.replace(/'/g, "\\'")}') OR toLower(s.name_en) CONTAINS toLower('${skill.replace(/'/g, "\\'")}'))
+      ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
+      RETURN count(DISTINCT c) as total
+    `;
+  } else if (domain) {
+    const escapedDomain = domain.replace(/'/g, "\\'");
+    countQuery = `
+      MATCH (c:Course)-[:BELONGS_TO]->(d:Domain)
+      WHERE (toLower(d.name_ar) CONTAINS toLower('${escapedDomain}') OR toLower(d.name_en) CONTAINS toLower('${escapedDomain}'))
+      ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
+      RETURN count(DISTINCT c) as total
+    `;
+  } else {
+    countQuery = `
+      MATCH (c:Course)
+      ${whereClause}
+      RETURN count(c) as total
+    `;
+  }
+  
+  let total = 0;
+  try {
+    const countResult = await makeRequest('POST', '/query', {
+      data: { query: countQuery }
+    });
+    total = countResult?.total || countResult?.[0]?.total || 0;
+  } catch (e) {
+    console.log('Count query failed, using result length');
+    total = Array.isArray(result) ? result.length : 0;
+  }
+  
+  return {
+    courses: Array.isArray(result) ? result : (result ? [result] : []),
+    total: total
+  };
+}
+
+/**
+ * Get all unique values for course filters (for dropdowns)
+ * Returns distinct values for difficulty_level, language, subject, provider, university, domain
+ */
+async function getCourseFilterOptions() {
+  const queries = {
+    levels: `MATCH (c:Course) WHERE c.difficulty_level IS NOT NULL RETURN DISTINCT c.difficulty_level as value ORDER BY value`,
+    languages: `MATCH (c:Course) WHERE c.language IS NOT NULL RETURN DISTINCT c.language as value ORDER BY value`,
+    subjects: `MATCH (c:Course) WHERE c.subject IS NOT NULL AND c.subject <> '' RETURN DISTINCT c.subject as value ORDER BY value`,
+    providers: `MATCH (c:Course) WHERE c.provider IS NOT NULL AND c.provider <> '' RETURN DISTINCT c.provider as value ORDER BY value`,
+    universities: `MATCH (c:Course) WHERE c.university IS NOT NULL AND c.university <> '' RETURN DISTINCT c.university as value ORDER BY value`,
+    domains: `MATCH (c:Course)-[:BELONGS_TO]->(d:Domain) RETURN DISTINCT d.name_ar as name_ar, d.name_en as name_en ORDER BY d.name_ar`,
+    skills: `MATCH (c:Course)-[:TEACHES]->(s:Skill) RETURN DISTINCT s.name_ar as name_ar, s.name_en as name_en ORDER BY s.name_ar`
+  };
+  
+  const results = {};
+  
+  for (const [key, query] of Object.entries(queries)) {
+    try {
+      const result = await makeRequest('POST', '/query', { data: { query } });
+      if (key === 'skills') {
+        // Return skill names as simple strings for dropdown
+        results[key] = Array.isArray(result) ? result.map(r => r.name_ar || r.name_en).filter(v => v) : [];
+      } else if (key === 'domains') {
+        // Return domain names as simple strings for dropdown
+        results[key] = Array.isArray(result) ? result.map(r => r.name_ar || r.name_en).filter(v => v) : [];
+      } else {
+        results[key] = Array.isArray(result) ? result.map(r => r.value).filter(v => v) : [];
+      }
+    } catch (e) {
+      console.log(`Failed to get ${key}:`, e.message);
+      results[key] = [];
+    }
+  }
+  
+  return results;
+}
+
+/**
  * Find peers with similar skill gaps for collaborative learning suggestions
  * Matches users who share common skill needs in the same department
  * @param {string} userId - The user ID to find peers for
@@ -509,12 +846,678 @@ async function findPeersWithSimilarGaps(userId, limit = 5) {
   `;
   
   try {
-    return await makeRequest('GET', '/query', {
-      params: { query }
+    return await makeRequest('POST', '/query', {
+      data: { query }
     });
   } catch (error) {
     console.error('Error finding peers with similar gaps:', error);
     return [];
+  }
+}
+
+/**
+ * Get the database schema from Neo4j
+ * Returns information about node labels, relationship types, and properties
+ */
+async function getSchema() {
+  return await makeRequest('GET', '/schema', {});
+}
+
+/**
+ * List all vector indexes in Neo4j
+ * Returns available indexes that can be used for vector search
+ */
+async function listIndexes() {
+  return await makeRequest('GET', '/indexes', {});
+}
+
+/**
+ * Update course node with AI-enriched metadata
+ * @param {string} courseId - Course ID
+ * @param {Object} enrichment - Enrichment data from courseEnricher
+ * @returns {Promise<Object>} Update result
+ */
+async function updateCourseEnrichment(courseId, enrichment) {
+  // Convert arrays to JSON strings for Neo4j storage
+  const extractedSkills = JSON.stringify(enrichment.extracted_skills || []);
+  const prerequisiteSkills = JSON.stringify(enrichment.prerequisite_skills || []);
+  const learningOutcomes = JSON.stringify(enrichment.learning_outcomes || []);
+  const targetAudience = JSON.stringify(enrichment.target_audience || {});
+  const careerPaths = JSON.stringify(enrichment.career_paths || []);
+  const industryTags = JSON.stringify(enrichment.industry_tags || []);
+  const topics = JSON.stringify(enrichment.topics || []);
+  const difficultyAssessment = JSON.stringify(enrichment.difficulty_assessment || {});
+  const qualityIndicators = JSON.stringify(enrichment.quality_indicators || {});
+  const keywordsAr = JSON.stringify(enrichment.keywords_ar || []);
+  const keywordsEn = JSON.stringify(enrichment.keywords_en || []);
+  
+  const query = `
+    MATCH (c:Course {course_id: '${courseId}'})
+    SET c.extracted_skills = '${extractedSkills.replace(/'/g, "\\'")}',
+        c.prerequisite_skills = '${prerequisiteSkills.replace(/'/g, "\\'")}',
+        c.learning_outcomes = '${learningOutcomes.replace(/'/g, "\\'")}',
+        c.target_audience = '${targetAudience.replace(/'/g, "\\'")}',
+        c.career_paths = '${careerPaths.replace(/'/g, "\\'")}',
+        c.industry_tags = '${industryTags.replace(/'/g, "\\'")}',
+        c.topics = '${topics.replace(/'/g, "\\'")}',
+        c.difficulty_assessment = '${difficultyAssessment.replace(/'/g, "\\'")}',
+        c.quality_indicators = '${qualityIndicators.replace(/'/g, "\\'")}',
+        c.keywords_ar = '${keywordsAr.replace(/'/g, "\\'")}',
+        c.keywords_en = '${keywordsEn.replace(/'/g, "\\'")}',
+        c.summary_ar = '${(enrichment.summary_ar || '').replace(/'/g, "\\'")}',
+        c.summary_en = '${(enrichment.summary_en || '').replace(/'/g, "\\'")}',
+        c.enriched_at = '${enrichment.enriched_at || new Date().toISOString()}',
+        c.enrichment_version = '${enrichment.enrichment_version || '1.0'}'
+    RETURN c.course_id as course_id, c.enriched_at as enriched_at
+  `;
+  
+  console.log(`📝 Updating Neo4j enrichment for course: ${courseId}`);
+  
+  return await makeRequest('POST', '/query', {
+    data: { query }
+  });
+}
+
+/**
+ * Create skill relationships from AI-extracted skills
+ * @param {string} courseId - Course ID
+ * @param {Array} skills - Array of skill names
+ * @returns {Promise<Object>} Creation results
+ */
+async function createExtractedSkillRelationships(courseId, skills) {
+  const results = {
+    created: 0,
+    existing: 0,
+    errors: []
+  };
+  
+  for (const skillName of skills) {
+    try {
+      // First check if skill exists
+      const findQuery = `
+        MATCH (s:Skill)
+        WHERE toLower(s.name_ar) = toLower('${skillName.replace(/'/g, "\\'")}')
+           OR toLower(s.name_en) = toLower('${skillName.replace(/'/g, "\\'")}')
+        RETURN s.skill_id as skill_id
+        LIMIT 1
+      `;
+      
+      const existingSkill = await makeRequest('POST', '/query', { data: { query: findQuery } });
+      
+      if (existingSkill && (existingSkill.skill_id || (Array.isArray(existingSkill) && existingSkill[0]?.skill_id))) {
+        // Skill exists, create relationship
+        const skillId = existingSkill.skill_id || existingSkill[0].skill_id;
+        
+        const relQuery = `
+          MATCH (c:Course {course_id: '${courseId}'})
+          MATCH (s:Skill {skill_id: '${skillId}'})
+          MERGE (c)-[t:TEACHES]->(s)
+          ON CREATE SET t.relevance_score = 0.8, t.source = 'ai_extracted'
+          RETURN type(t) as rel_type
+        `;
+        
+        await makeRequest('POST', '/query', { data: { query: relQuery } });
+        results.created++;
+      } else {
+        results.existing++;
+      }
+    } catch (error) {
+      results.errors.push({ skill: skillName, error: error.message });
+    }
+  }
+  
+  return results;
+}
+
+/**
+ * Get course recommendations based on user interests (skills/topics)
+ * Searches courses that teach skills matching the user's interests
+ * @param {Array} interests - Array of interest strings in format "subjectId:skillName"
+ * @param {number} limit - Maximum courses to return
+ * @returns {Promise<Array>} Array of course recommendations
+ */
+async function getRecommendationsByInterests(interests, limit = 10) {
+  if (!interests || interests.length === 0) {
+    return [];
+  }
+
+  // Extract skill names from interest keys (format: "subjectId:skillName")
+  const skillNames = interests.map(interest => {
+    const parts = interest.split(':');
+    return parts.length > 1 ? parts.slice(1).join(':') : interest;
+  }).filter(name => name && name.trim());
+
+  if (skillNames.length === 0) {
+    return [];
+  }
+
+  // Build WHERE conditions for skill matching
+  const skillConditions = skillNames.map(skill => {
+    const escaped = skill.replace(/'/g, "\\'");
+    return `(
+      toLower(c.name_ar) CONTAINS toLower('${escaped}') OR
+      toLower(c.name_en) CONTAINS toLower('${escaped}') OR
+      toLower(c.description_ar) CONTAINS toLower('${escaped}') OR
+      toLower(c.subject) CONTAINS toLower('${escaped}') OR
+      toLower(s.name_ar) CONTAINS toLower('${escaped}') OR
+      toLower(s.name_en) CONTAINS toLower('${escaped}')
+    )`;
+  }).join(' OR ');
+
+  const query = `
+    MATCH (c:Course)
+    OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
+    WHERE ${skillConditions}
+    WITH c, 
+         collect(DISTINCT s.name_ar) as matching_skills,
+         count(DISTINCT s) as skill_coverage
+    RETURN DISTINCT
+      c.course_id as course_id,
+      c.name_ar as name_ar,
+      c.name_en as name_en,
+      c.description_ar as description_ar,
+      c.url as url,
+      c.provider as provider,
+      c.duration_hours as duration_hours,
+      c.difficulty_level as difficulty_level,
+      c.subject as subject,
+      c.university as university,
+      c.price as price,
+      matching_skills,
+      skill_coverage,
+      c.extracted_skills as extracted_skills,
+      c.learning_outcomes as learning_outcomes,
+      c.target_audience as target_audience,
+      c.career_paths as career_paths,
+      c.summary_ar as summary_ar,
+      c.summary_en as summary_en
+    ORDER BY skill_coverage DESC
+    LIMIT ${limit}
+  `;
+
+  console.log('🎯 Neo4j Interests Query:', query);
+
+  try {
+    return await makeRequest('POST', '/query', {
+      data: { query }
+    });
+  } catch (error) {
+    console.error('Error fetching recommendations by interests:', error);
+    return [];
+  }
+}
+
+/**
+ * Get course recommendations based on desired domains (career aspirations)
+ * Searches courses that belong to or relate to the user's desired career domains
+ * @param {Array} domainIds - Array of domain IDs
+ * @param {number} limit - Maximum courses to return
+ * @returns {Promise<Array>} Array of course recommendations
+ */
+async function getRecommendationsByDomains(domainIds, domainNames, limit = 10) {
+  if ((!domainIds || domainIds.length === 0) && (!domainNames || domainNames.length === 0)) {
+    return [];
+  }
+
+  // Build WHERE conditions for domain matching using domain names
+  let domainConditions = 'false'; // Default to false if no conditions
+  
+  if (domainNames && domainNames.length > 0) {
+    const conditions = domainNames.map(domain => {
+      const escaped = (domain.name_ar || domain.name_en || '').replace(/'/g, "\\'");
+      const escapedEn = (domain.name_en || '').replace(/'/g, "\\'");
+      return `(
+        toLower(c.subject) CONTAINS toLower('${escaped}') OR
+        toLower(c.subject) CONTAINS toLower('${escapedEn}') OR
+        toLower(c.name_ar) CONTAINS toLower('${escaped}') OR
+        toLower(c.name_en) CONTAINS toLower('${escapedEn}') OR
+        toLower(c.description_ar) CONTAINS toLower('${escaped}')
+      )`;
+    }).filter(c => c);
+    
+    if (conditions.length > 0) {
+      domainConditions = conditions.join(' OR ');
+    }
+  }
+
+  const query = `
+    MATCH (c:Course)
+    WHERE ${domainConditions}
+    OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
+    WITH c, 
+         collect(DISTINCT s.name_ar) as related_skills,
+         count(DISTINCT s) as skill_coverage
+    RETURN DISTINCT
+      c.course_id as course_id,
+      c.name_ar as name_ar,
+      c.name_en as name_en,
+      c.description_ar as description_ar,
+      c.url as url,
+      c.provider as provider,
+      c.duration_hours as duration_hours,
+      c.difficulty_level as difficulty_level,
+      c.subject as subject,
+      c.university as university,
+      c.price as price,
+      related_skills as matching_skills,
+      skill_coverage,
+      c.extracted_skills as extracted_skills,
+      c.learning_outcomes as learning_outcomes,
+      c.target_audience as target_audience,
+      c.career_paths as career_paths,
+      c.summary_ar as summary_ar,
+      c.summary_en as summary_en
+    ORDER BY skill_coverage DESC
+    LIMIT ${limit}
+  `;
+
+  console.log('🚀 Neo4j Career Domains Query:', query);
+
+  try {
+    return await makeRequest('POST', '/query', {
+      data: { query }
+    });
+  } catch (error) {
+    console.error('Error fetching recommendations by domains:', error);
+    return [];
+  }
+}
+
+/**
+ * Update course metadata (subject, difficulty, description, etc.)
+ * @param {string} courseId - Course ID
+ * @param {Object} updates - Object with fields to update
+ * @returns {Promise<Object>} Update result
+ */
+async function updateCourseMetadata(courseId, updates) {
+  const allowedFields = [
+    'subject', 'difficulty_level', 'name_ar', 'name_en',
+    'description_ar', 'description_en', 'provider', 'university',
+    'duration_hours', 'language', 'url'
+  ];
+  
+  const setClauses = [];
+  for (const [key, value] of Object.entries(updates)) {
+    if (allowedFields.includes(key) && value !== undefined) {
+      if (typeof value === 'number') {
+        setClauses.push(`c.${key} = ${value}`);
+      } else if (value === null) {
+        setClauses.push(`c.${key} = null`);
+      } else {
+        // Escape backslashes first, then single quotes (order matters!)
+        const escaped = String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+        setClauses.push(`c.${key} = '${escaped}'`);
+      }
+    }
+  }
+  
+  if (setClauses.length === 0) {
+    throw new Error('No valid fields to update');
+  }
+  
+  // Use ISO string for updated_at since datetime() may not be supported in all Neo4j configurations
+  const updatedAt = new Date().toISOString();
+  
+  const query = `
+    MATCH (c:Course {course_id: '${courseId}'})
+    SET ${setClauses.join(', ')}, c.updated_at = '${updatedAt}'
+    RETURN c.course_id as course_id, c.name_ar as name_ar, c.subject as subject
+  `;
+  
+  console.log(`📝 Updating Neo4j course metadata: ${courseId}`);
+  console.log(`📝 Query: ${query}`);
+  
+  try {
+    const result = await makeRequest('POST', '/query', { data: { query } });
+    console.log(`✅ Neo4j update successful:`, result);
+    return result;
+  } catch (error) {
+    console.error(`❌ Neo4j update failed:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Remove a specific skill relationship from a course
+ * @param {string} courseId - Course ID
+ * @param {string} skillName - Skill name (Arabic or English)
+ * @returns {Promise<Object>} Deletion result
+ */
+async function removeCourseSkillRelationship(courseId, skillName) {
+  const escaped = skillName.replace(/'/g, "\\'");
+  const query = `
+    MATCH (c:Course {course_id: '${courseId}'})-[t:TEACHES]->(s:Skill)
+    WHERE toLower(s.name_ar) = toLower('${escaped}') OR toLower(s.name_en) = toLower('${escaped}')
+    DELETE t
+    RETURN count(t) as deleted_count
+  `;
+  
+  console.log(`🗑️ Removing skill relationship: ${courseId} -> ${skillName}`);
+  
+  return await makeRequest('POST', '/query', { data: { query } });
+}
+
+/**
+ * Add a skill relationship to a course
+ * @param {string} courseId - Course ID  
+ * @param {string} skillName - Skill name to link
+ * @param {number} relevanceScore - Relevance score (default 0.8)
+ * @returns {Promise<Object>} Creation result
+ */
+async function addCourseSkillByName(courseId, skillName, relevanceScore = 0.8) {
+  const escaped = skillName.replace(/'/g, "\\'");
+  
+  // First find the skill
+  const findQuery = `
+    MATCH (s:Skill)
+    WHERE toLower(s.name_ar) = toLower('${escaped}') OR toLower(s.name_en) = toLower('${escaped}')
+    RETURN s.skill_id as skill_id, s.name_ar as name_ar
+    LIMIT 1
+  `;
+  
+  const skillResult = await makeRequest('POST', '/query', { data: { query: findQuery } });
+  
+  if (!skillResult || (Array.isArray(skillResult) && skillResult.length === 0)) {
+    throw new Error(`Skill not found: ${skillName}`);
+  }
+  
+  const skillId = skillResult.skill_id || (Array.isArray(skillResult) ? skillResult[0]?.skill_id : null);
+  
+  if (!skillId) {
+    throw new Error(`Skill ID not found for: ${skillName}`);
+  }
+  
+  // Create the relationship
+  const createQuery = `
+    MATCH (c:Course {course_id: '${courseId}'})
+    MATCH (s:Skill {skill_id: '${skillId}'})
+    MERGE (c)-[t:TEACHES]->(s)
+    ON CREATE SET t.relevance_score = ${relevanceScore}, t.source = 'admin_added'
+    ON MATCH SET t.relevance_score = ${relevanceScore}
+    RETURN type(t) as rel_type, s.name_ar as skill_name
+  `;
+  
+  console.log(`➕ Adding skill relationship: ${courseId} -> ${skillName}`);
+  
+  return await makeRequest('POST', '/query', { data: { query: createQuery } });
+}
+
+/**
+ * Delete a course completely from Neo4j (with all relationships)
+ * @param {string} courseId - Course ID
+ * @returns {Promise<Object>} Deletion result
+ */
+async function deleteCourseComplete(courseId) {
+  console.log(`🗑️ Deleting course completely from Neo4j: ${courseId}`);
+  
+  // First delete all relationships
+  await deleteNodeRelationships('Course', 'course_id', courseId);
+  
+  // Then delete the node
+  return await deleteNode('Course', 'course_id', courseId);
+}
+
+/**
+ * Get a single course from Neo4j by ID
+ * @param {string} courseId - Course ID
+ * @returns {Promise<Object>} Course data
+ */
+async function getCourseById(courseId) {
+  const query = `
+    MATCH (c:Course {course_id: '${courseId}'})
+    OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
+    WITH c, collect(DISTINCT {name_ar: s.name_ar, name_en: s.name_en, relevance: t.relevance_score}) as skills
+    RETURN 
+      c.course_id as course_id,
+      c.name_ar as name_ar,
+      c.name_en as name_en,
+      c.description_ar as description_ar,
+      c.description_en as description_en,
+      c.url as url,
+      c.provider as provider,
+      c.duration_hours as duration_hours,
+      c.difficulty_level as difficulty_level,
+      c.language as language,
+      c.subject as subject,
+      c.subtitle as subtitle,
+      c.university as university,
+      skills
+  `;
+  
+  const result = await makeRequest('POST', '/query', { data: { query } });
+  
+  if (!result || (Array.isArray(result) && result.length === 0)) {
+    return null;
+  }
+  
+  return Array.isArray(result) ? result[0] : result;
+}
+
+/**
+ * Get all skills available in Neo4j for dropdown selection
+ * @returns {Promise<Array>} Array of skill objects
+ */
+async function getAllSkills() {
+  const query = `
+    MATCH (s:Skill)
+    RETURN s.skill_id as skill_id, s.name_ar as name_ar, s.name_en as name_en
+    ORDER BY s.name_ar
+  `;
+  
+  const result = await makeRequest('POST', '/query', { data: { query } });
+  return Array.isArray(result) ? result : (result ? [result] : []);
+}
+
+// ============================================
+// NELC USER COURSE DATA FUNCTIONS
+// These functions query the NELC Neo4j database
+// for user course progress and completion data
+// ============================================
+
+/**
+ * Get a NELC user by their national ID from Neo4j
+ * @param {string|number} nationalId - User's national ID
+ * @returns {Promise<Object|null>} - User data or null if not found
+ */
+async function getNelcUserByNationalId(nationalId) {
+  try {
+    const result = await makeRequest('GET', '/node', {
+      params: {
+        label: 'User',
+        id: nationalId.toString()
+      }
+    });
+    
+    if (result && result.data) {
+      return result.data;
+    }
+    return null;
+  } catch (error) {
+    if (error.status === 422 || error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Get all course actions for a NELC user (enrollments, completions, progress)
+ * @param {string|number} nationalId - User's national ID
+ * @returns {Promise<Array>} - Array of course actions with status
+ */
+async function getNelcUserCourses(nationalId) {
+  const query = `
+    MATCH (u:User {user_national_id: ${nationalId}})-[:PERFORMED]->(a:Action)-[:ON]->(c:Course)
+    MATCH (a)-[:OF_TYPE]->(at:ActionType)
+    WITH c.course_name as course_name, 
+         c.course_id as course_id, 
+         c.course_URL as course_url,
+         collect(DISTINCT at.action_type_name) as actions,
+         MAX(a.source_created_at) as last_action_date,
+         MAX(a.action_score) as max_score
+    RETURN course_name, course_id, course_url, actions, last_action_date, max_score,
+           CASE 
+             WHEN 'Complete' IN actions THEN 'Completed'
+             WHEN 'Progress' IN actions THEN 'In Progress'
+             WHEN 'Enroll' IN actions THEN 'Enrolled'
+             ELSE 'Unknown'
+           END as status
+    ORDER BY status, course_name
+  `;
+  
+  try {
+    const result = await makeRequest('POST', '/query', {
+      data: { query }
+    });
+    
+    return Array.isArray(result) ? result : (result ? [result] : []);
+  } catch (error) {
+    console.error('Error fetching NELC user courses:', error);
+    return [];
+  }
+}
+
+/**
+ * Get only completed courses for a NELC user
+ * @param {string|number} nationalId - User's national ID
+ * @returns {Promise<Array>} - Array of completed courses
+ */
+async function getNelcCompletedCourses(nationalId) {
+  const query = `
+    MATCH (u:User {user_national_id: ${nationalId}})-[:PERFORMED]->(a:Action)-[:ON]->(c:Course)
+    MATCH (a)-[:OF_TYPE]->(at:ActionType {action_type_name: 'Complete'})
+    RETURN DISTINCT
+      c.course_name as course_name,
+      c.course_id as course_id,
+      c.course_URL as course_url,
+      a.source_created_at as completion_date,
+      a.action_score as score
+    ORDER BY a.source_created_at DESC
+  `;
+  
+  try {
+    const result = await makeRequest('POST', '/query', {
+      data: { query }
+    });
+    
+    return Array.isArray(result) ? result : (result ? [result] : []);
+  } catch (error) {
+    console.error('Error fetching NELC completed courses:', error);
+    return [];
+  }
+}
+
+/**
+ * Get enrolled courses for a NELC user
+ * @param {string|number} nationalId - User's national ID
+ * @returns {Promise<Array>} - Array of enrolled courses
+ */
+async function getNelcEnrolledCourses(nationalId) {
+  const query = `
+    MATCH (u:User {user_national_id: ${nationalId}})-[:PERFORMED]->(a:Action)-[:ON]->(c:Course)
+    MATCH (a)-[:OF_TYPE]->(at:ActionType {action_type_name: 'Enroll'})
+    RETURN DISTINCT
+      c.course_name as course_name,
+      c.course_id as course_id,
+      c.course_URL as course_url,
+      a.source_created_at as enroll_date
+    ORDER BY a.source_created_at DESC
+  `;
+  
+  try {
+    const result = await makeRequest('POST', '/query', {
+      data: { query }
+    });
+    
+    return Array.isArray(result) ? result : (result ? [result] : []);
+  } catch (error) {
+    console.error('Error fetching NELC enrolled courses:', error);
+    return [];
+  }
+}
+
+/**
+ * Get a summary of user's actions by type
+ * @param {string|number} nationalId - User's national ID
+ * @returns {Promise<Object>} - Summary with action counts
+ */
+async function getNelcUserActionSummary(nationalId) {
+  const query = `
+    MATCH (u:User {user_national_id: ${nationalId}})-[:PERFORMED]->(a:Action)-[:OF_TYPE]->(at:ActionType)
+    RETURN at.action_type_name as action_type, count(*) as count
+    ORDER BY count DESC
+  `;
+  
+  try {
+    const result = await makeRequest('POST', '/query', {
+      data: { query }
+    });
+    
+    const summary = {
+      total_actions: 0,
+      completed: 0,
+      enrolled: 0,
+      in_progress: 0,
+      other: 0
+    };
+    
+    if (Array.isArray(result)) {
+      result.forEach(row => {
+        summary.total_actions += row.count || 0;
+        switch (row.action_type) {
+          case 'Complete':
+            summary.completed = row.count || 0;
+            break;
+          case 'Enroll':
+            summary.enrolled = row.count || 0;
+            break;
+          case 'Progress':
+            summary.in_progress = row.count || 0;
+            break;
+          default:
+            summary.other += row.count || 0;
+        }
+      });
+    }
+    
+    return summary;
+  } catch (error) {
+    console.error('Error fetching NELC user action summary:', error);
+    return { total_actions: 0, completed: 0, enrolled: 0, in_progress: 0, other: 0 };
+  }
+}
+
+/**
+ * Check if NELC Neo4j API is properly configured and accessible
+ * @returns {Promise<Object>} - Status object
+ */
+async function checkNelcApiStatus() {
+  try {
+    const clientId = process.env.NEO4J_CLIENT_ID;
+    const clientSecret = process.env.NEO4J_CLIENT_SECRET;
+    
+    if (!clientId || !clientSecret) {
+      return {
+        configured: false,
+        connected: false,
+        message: 'NEO4J_CLIENT_ID and NEO4J_CLIENT_SECRET must be configured'
+      };
+    }
+    
+    // Try to get a token to verify credentials work
+    await getAccessToken();
+    
+    return {
+      configured: true,
+      connected: true,
+      message: 'NELC Neo4j API is configured and accessible'
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      connected: false,
+      message: `Failed to connect to NELC Neo4j API: ${error.message}`
+    };
   }
 }
 
@@ -533,5 +1536,27 @@ module.exports = {
   getEnhancedRecommendationsForUser,
   nodeExists,
   syncAllSkills,
-  findPeersWithSimilarGaps
+  findPeersWithSimilarGaps,
+  searchCourses,
+  getCourseFilterOptions,
+  getSchema,
+  listIndexes,
+  updateCourseEnrichment,
+  createExtractedSkillRelationships,
+  getRecommendationsByInterests,
+  getRecommendationsByDomains,
+  // New admin methods
+  updateCourseMetadata,
+  removeCourseSkillRelationship,
+  addCourseSkillByName,
+  deleteCourseComplete,
+  getCourseById,
+  getAllSkills,
+  // NELC User Course Data Functions
+  getNelcUserByNationalId,
+  getNelcUserCourses,
+  getNelcCompletedCourses,
+  getNelcEnrolledCourses,
+  getNelcUserActionSummary,
+  checkNelcApiStatus
 };

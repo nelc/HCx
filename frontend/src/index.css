@@ -99,6 +99,22 @@ input:focus, textarea:focus, select:focus {
   @apply bg-accent-500 text-white hover:bg-accent-600 active:scale-[0.98];
 }
 
+.btn-success {
+  @apply text-white active:scale-[0.98];
+  background-color: #16a34a;
+}
+.btn-success:hover {
+  background-color: #15803d;
+}
+
+.btn-danger {
+  @apply text-white active:scale-[0.98];
+  background-color: #dc2626;
+}
+.btn-danger:hover {
+  background-color: #b91c1c;
+}
+
 /* Form input styles */
 .input {
   @apply w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-slate-700 placeholder-slate-400 transition-all duration-200;

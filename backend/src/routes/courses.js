@@ -5,9 +5,46 @@ const { body, query, param, validationResult } = require('express-validator');
 const db = require('../db');
 const { authenticate, isAdmin, isTrainingOfficer } = require('../middleware/auth');
 const neo4jApi = require('../services/neo4jApi');
+const contentApi = require('../services/contentApi');
+const courseEnricher = require('../services/courseEnricher');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
+
+// FutureX URL transformation constants and helper
+const FUTUREX_BASE_URL = 'https://futurex.nelc.gov.sa/ar/course';
+
+/**
+ * Transform course URL to FutureX platform URL format
+ * @param {Object} course - Course object with url, nelc_course_id, or course_id
+ * @returns {string} FutureX URL or original URL as fallback
+ */
+function toFuturexUrl(course) {
+  // If nelc_course_id exists, use it directly (highest priority)
+  if (course.nelc_course_id) {
+    return `${FUTUREX_BASE_URL}/${course.nelc_course_id}`;
+  }
+  
+  // Try to extract course ID from existing URL (e.g., futurex URLs)
+  const url = course.url || course.course_url || '';
+  const match = url.match(/\/course\/(\d+)/);
+  if (match) {
+    return `${FUTUREX_BASE_URL}/${match[1]}`;
+  }
+  
+  // If course has a course_id and it looks like a numeric NELC ID, use it
+  if (course.course_id && /^\d+$/.test(String(course.course_id))) {
+    return `${FUTUREX_BASE_URL}/${course.course_id}`;
+  }
+  
+  // Try to extract from id field as well
+  if (course.id && /^\d+$/.test(String(course.id))) {
+    return `${FUTUREX_BASE_URL}/${course.id}`;
+  }
+  
+  // Return original URL as fallback (courses without NELC/FutureX equivalent)
+  return url || '';
+}
 
 /**
  * Calculate intelligent relevance score for course-skill relationship
@@ -53,11 +90,884 @@ function calculateRelevanceScore(courseData, skillData) {
 router.use(authenticate);
 
 /**
+ * GET /api/courses/nelc
+ * Fetch courses from NELC's built-in Content API (rh-contents)
+ * This returns courses from the national e-learning catalog
+ */
+router.get('/nelc',
+  [
+    query('page').optional().isInt({ min: 1 }),
+    query('name').optional().isString(),
+    query('levels').optional(),
+    query('skills').optional(),
+    query('occupation_domains').optional(),
+    query('content_types').optional(),
+    query('estimated_hours').optional()
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const {
+        page = 1,
+        name,
+        levels,
+        skills,
+        occupation_domains,
+        content_types,
+        estimated_hours
+      } = req.query;
+
+      // Build filters for Content API
+      const filters = { page: parseInt(page) };
+      
+      if (name) filters.name = name;
+      
+      // Parse array parameters (they come as comma-separated strings)
+      if (levels) {
+        filters.levels = Array.isArray(levels) ? levels : levels.split(',');
+      }
+      if (skills) {
+        filters.skills = Array.isArray(skills) ? skills : skills.split(',');
+      }
+      if (occupation_domains) {
+        filters.occupation_domains = Array.isArray(occupation_domains) 
+          ? occupation_domains 
+          : occupation_domains.split(',');
+      }
+      if (content_types) {
+        filters.content_types = Array.isArray(content_types) 
+          ? content_types 
+          : content_types.split(',');
+      }
+      if (estimated_hours) {
+        filters.estimated_hours = Array.isArray(estimated_hours) 
+          ? estimated_hours 
+          : estimated_hours.split(',');
+      }
+
+      console.log('📚 Fetching NELC courses with filters:', filters);
+
+      // Fetch from Content API
+      const response = await contentApi.listContents(filters, 'ar');
+      
+      // Transform response to match our course format
+      // The Content API returns data in a specific format
+      let courses = [];
+      let total = 0;
+      
+      if (Array.isArray(response)) {
+        courses = response;
+        total = response.length;
+      } else if (response && response.data) {
+        courses = response.data;
+        total = response.total || response.data.length;
+      } else if (response && response.contents) {
+        courses = response.contents;
+        total = response.total || response.contents.length;
+      }
+
+      // Map NELC content format to our course format
+      const mappedCourses = courses.map(content => {
+        const contentId = content.id || content.content_id;
+        const rawUrl = content.url || content.link || '';
+        
+        return {
+          id: contentId,
+          name_ar: content.name || content.title || content.name_ar,
+          name_en: content.name_en || content.title_en || '',
+          description_ar: content.description || content.description_ar || '',
+          description_en: content.description_en || '',
+          url: toFuturexUrl({ url: rawUrl, course_id: contentId, nelc_course_id: contentId }),
+          provider: content.entity || content.provider || 'NELC',
+          duration_hours: content.estimated_hours || content.duration_hours || null,
+          difficulty_level: mapNelcLevel(content.level || content.difficulty_level),
+          language: content.translation || content.language || 'ar',
+          subject: content.occupation_domain || content.subject || '',
+          skills: content.skills || [],
+          content_type: content.content_type || 'course',
+          source: 'nelc', // Mark as NELC course
+          // Additional NELC-specific fields
+          nelc_id: content.id || content.content_id,
+          image_url: content.image_url || content.thumbnail || null,
+          rating: content.rating || null,
+          reviews_count: content.reviews_count || null
+        };
+      });
+
+      console.log(`✅ Found ${mappedCourses.length} NELC courses`);
+
+      res.json({
+        courses: mappedCourses,
+        pagination: {
+          page: parseInt(page),
+          total: total,
+          hasMore: mappedCourses.length >= 20 // Assume more pages if we got full page
+        },
+        source: 'nelc'
+      });
+    } catch (error) {
+      console.error('❌ Fetch NELC courses error:', error);
+      
+      // Check if credentials are missing (most common issue)
+      const isMissingCredentials = 
+        error.message?.includes('RH_CONTENTS_CLIENT_ID') ||
+        error.message?.includes('RH_CONTENTS_CLIENT_SECRET') ||
+        error.code === 'CONFIG_ERROR';
+      
+      if (isMissingCredentials) {
+        return res.status(503).json({
+          error: 'خدمة NELC غير مُعدّة',
+          message: 'يرجى تكوين بيانات اعتماد Content API في ملف .env',
+          code: 'CONFIG_ERROR',
+          hint: 'Set RH_CONTENTS_CLIENT_ID and RH_CONTENTS_CLIENT_SECRET in .env file'
+        });
+      }
+      
+      if (error.code === 'AUTH_ERROR') {
+        return res.status(401).json({
+          error: 'فشل في المصادقة مع خدمة المحتوى',
+          message: error.message,
+          code: error.code
+        });
+      }
+      
+      if (error.code === 'SERVICE_UNAVAILABLE') {
+        return res.status(503).json({
+          error: 'خدمة NELC غير متاحة حالياً',
+          message: 'يرجى المحاولة لاحقاً',
+          code: error.code
+        });
+      }
+      
+      res.status(error.status || 500).json({
+        error: 'فشل في تحميل دورات NELC',
+        message: error.message,
+        details: process.env.NODE_ENV === 'development' ? error : undefined
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/courses/nelc/range-hours
+ * Get available hour ranges for filtering NELC courses
+ */
+router.get('/nelc/range-hours', async (req, res) => {
+  try {
+    const rangeHours = await contentApi.getRangeHours('ar');
+    res.json(rangeHours);
+  } catch (error) {
+    console.error('Get range hours error:', error);
+    res.status(error.status || 500).json({
+      error: 'Failed to get range hours',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/courses/neo4j
+ * Search and list courses from Neo4j graph database
+ * This searches the actual Neo4j database for Course nodes
+ */
+router.get('/neo4j',
+  [
+    query('page').optional().isInt({ min: 1 }),
+    query('limit').optional().isInt({ min: 1, max: 100 }),
+    query('search').optional().isString(),
+    query('difficulty_level').optional().isString(), // Allow any value from database
+    query('language').optional().isString(),
+    query('subject').optional().isString(),
+    query('provider').optional().isString(),
+    query('university').optional().isString(),
+    query('domain').optional().isString(),
+    query('skill').optional().isString()
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const {
+        page = 1,
+        limit = 20,
+        search,
+        difficulty_level,
+        language,
+        subject,
+        provider,
+        university,
+        domain,
+        skill
+      } = req.query;
+
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+
+      console.log('🔍 Searching Neo4j courses with filters:', {
+        search, difficulty_level, language, subject, provider, university, domain, skill,
+        page, limit, skip
+      });
+
+      // Search courses in Neo4j
+      const result = await neo4jApi.searchCourses(
+        { search, difficulty_level, language, subject, provider, university, domain, skill },
+        skip,
+        parseInt(limit)
+      );
+
+      // Get enrichment data from PostgreSQL for these courses
+      const courseIds = result.courses.map(c => c.course_id).filter(Boolean);
+      let enrichmentMap = {};
+      
+      if (courseIds.length > 0) {
+        try {
+          const enrichmentResult = await db.query(
+            `SELECT * FROM course_enrichments WHERE course_id = ANY($1)`,
+            [courseIds]
+          );
+          enrichmentResult.rows.forEach(e => {
+            enrichmentMap[e.course_id] = e;
+          });
+        } catch (e) {
+          console.log('Note: course_enrichments table may not exist yet');
+        }
+      }
+
+      // Get local overrides from PostgreSQL for these courses
+      let overridesMap = {};
+      let skillOverridesMap = {};
+      let hiddenCoursesSet = new Set();
+      if (courseIds.length > 0) {
+        try {
+          const overridesResult = await db.query(
+            `SELECT course_id, overrides FROM course_overrides WHERE course_id = ANY($1)`,
+            [courseIds]
+          );
+          overridesResult.rows.forEach(o => {
+            overridesMap[o.course_id] = typeof o.overrides === 'string' ? JSON.parse(o.overrides) : o.overrides;
+          });
+        } catch (e) {
+          console.log('Note: course_overrides table may not exist yet');
+        }
+
+        // Get skill overrides
+        try {
+          const skillOverridesResult = await db.query(
+            `SELECT course_id, skill_name, action FROM course_skill_overrides WHERE course_id = ANY($1)`,
+            [courseIds]
+          );
+          skillOverridesResult.rows.forEach(so => {
+            if (!skillOverridesMap[so.course_id]) {
+              skillOverridesMap[so.course_id] = { add: [], remove: [] };
+            }
+            if (so.action === 'add') {
+              skillOverridesMap[so.course_id].add.push(so.skill_name);
+            } else if (so.action === 'remove') {
+              skillOverridesMap[so.course_id].remove.push(so.skill_name);
+            }
+          });
+        } catch (e) {
+          console.log('Note: course_skill_overrides table may not exist yet');
+        }
+
+        // Get hidden courses
+        try {
+          const hiddenResult = await db.query(
+            `SELECT course_id FROM hidden_courses WHERE course_id = ANY($1)`,
+            [courseIds]
+          );
+          hiddenResult.rows.forEach(h => {
+            hiddenCoursesSet.add(h.course_id);
+          });
+        } catch (e) {
+          console.log('Note: hidden_courses table may not exist yet');
+        }
+      }
+      
+      // Get nelc_course_id from local courses table for FutureX URL transformation
+      let nelcIdMap = {};
+      if (courseIds.length > 0) {
+        try {
+          const nelcResult = await db.query(
+            `SELECT id, nelc_course_id FROM courses WHERE id = ANY($1) AND nelc_course_id IS NOT NULL`,
+            [courseIds]
+          );
+          nelcResult.rows.forEach(c => {
+            nelcIdMap[c.id] = c.nelc_course_id;
+          });
+          console.log(`📎 Found ${nelcResult.rows.length} courses with nelc_course_id in local DB`);
+        } catch (e) {
+          console.log('Note: courses table query for nelc_course_id failed:', e.message);
+        }
+      }
+
+      // Map the results to our standard course format
+      const mappedCourses = result.courses.map(course => {
+        // Get enrichment from PostgreSQL
+        const enrichment = enrichmentMap[course.course_id];
+        // Get local overrides
+        const overrides = overridesMap[course.course_id] || {};
+        // Get skill overrides
+        const skillOverrides = skillOverridesMap[course.course_id] || { add: [], remove: [] };
+        // Get NELC course ID from local database for FutureX URL
+        const nelcCourseId = nelcIdMap[course.course_id];
+        
+        // Apply skill overrides
+        let skills = (course.skills || []).filter(s => s && s.name_ar);
+        // Remove skills marked for removal
+        skills = skills.filter(s => !skillOverrides.remove.includes(s.name_ar) && !skillOverrides.remove.includes(s.name_en));
+        // Add skills marked for addition
+        skillOverrides.add.forEach(skillName => {
+          if (!skills.some(s => s.name_ar === skillName || s.name_en === skillName)) {
+            skills.push({ name_ar: skillName, name_en: skillName });
+          }
+        });
+        
+        // Handle domains - support both array and single subject
+        let courseDomains = overrides.domains || [];
+        if (courseDomains.length === 0 && (overrides.subject || course.subject)) {
+          courseDomains = [overrides.subject || course.subject];
+        }
+        
+        // Build the raw URL first, then transform to FutureX format
+        const rawUrl = overrides.url || course.url || '';
+        
+        return {
+          id: course.course_id,
+          name_ar: overrides.name_ar || course.name_ar || '',
+          name_en: overrides.name_en || course.name_en || '',
+          description_ar: overrides.description_ar || course.description_ar || '',
+          description_en: overrides.description_en || course.description_en || '',
+          url: toFuturexUrl({ url: rawUrl, course_id: course.course_id, nelc_course_id: nelcCourseId }),
+          provider: overrides.provider || course.provider || '',
+          duration_hours: overrides.duration_hours || course.duration_hours || null,
+          difficulty_level: overrides.difficulty_level || course.difficulty_level || 'beginner',
+          language: overrides.language || course.language || 'ar',
+          subject: overrides.subject || course.subject || '',
+          domains: courseDomains,
+          subtitle: course.subtitle || '',
+          university: overrides.university || course.university || '',
+          price: course.price || null,
+          skills: skills,
+          source: 'neo4j',
+          is_hidden: hiddenCoursesSet.has(course.course_id),
+          has_local_overrides: Object.keys(overrides).length > 0 || skillOverrides.add.length > 0 || skillOverrides.remove.length > 0,
+          // AI-enriched fields from PostgreSQL
+          extracted_skills: enrichment?.extracted_skills || [],
+          learning_outcomes: enrichment?.learning_outcomes || [],
+          target_audience: enrichment?.target_audience || null,
+          career_paths: enrichment?.career_paths || [],
+          industry_tags: enrichment?.industry_tags || [],
+          summary_ar: enrichment?.summary_ar || '',
+          summary_en: enrichment?.summary_en || '',
+          quality_indicators: enrichment?.quality_indicators || null,
+          is_enriched: !!enrichment,
+          enriched_at: enrichment?.enriched_at || null
+        };
+      });
+
+      console.log(`✅ Found ${mappedCourses.length} courses in Neo4j (total: ${result.total})`);
+
+      res.json({
+        courses: mappedCourses,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: result.total,
+          totalPages: Math.ceil(result.total / parseInt(limit))
+        },
+        source: 'neo4j'
+      });
+    } catch (error) {
+      console.error('❌ Search Neo4j courses error:', error);
+
+      // Check if credentials are missing
+      const isMissingCredentials = 
+        error.message?.includes('NEO4J_CLIENT_ID') ||
+        error.message?.includes('NEO4J_CLIENT_SECRET') ||
+        error.code === 'CONFIG_ERROR';
+
+      if (isMissingCredentials) {
+        return res.status(503).json({
+          error: 'خدمة Neo4j غير مُعدّة',
+          message: 'يرجى تكوين بيانات اعتماد Neo4j API في ملف .env',
+          code: 'CONFIG_ERROR',
+          hint: 'Set NEO4J_CLIENT_ID and NEO4J_CLIENT_SECRET in .env file'
+        });
+      }
+
+      if (error.code === 'SERVICE_UNAVAILABLE') {
+        return res.status(503).json({
+          error: 'خدمة Neo4j غير متاحة حالياً',
+          message: 'يرجى المحاولة لاحقاً',
+          code: error.code
+        });
+      }
+
+      res.status(error.status || 500).json({
+        error: 'فشل في البحث عن دورات Neo4j',
+        message: error.message,
+        details: process.env.NODE_ENV === 'development' ? error : undefined
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/courses/neo4j/filters
+ * Get available filter options for Neo4j courses (dropdown values)
+ */
+router.get('/neo4j/filters', async (req, res) => {
+  try {
+    const filters = await neo4jApi.getCourseFilterOptions();
+    res.json(filters);
+  } catch (error) {
+    console.error('Get Neo4j filter options error:', error);
+    
+    // Check if credentials are missing
+    const isMissingCredentials = 
+      error.message?.includes('NEO4J_CLIENT_ID') ||
+      error.message?.includes('NEO4J_CLIENT_SECRET') ||
+      error.code === 'CONFIG_ERROR';
+
+    if (isMissingCredentials) {
+      return res.status(503).json({
+        error: 'خدمة Neo4j غير مُعدّة',
+        code: 'CONFIG_ERROR'
+      });
+    }
+
+    res.status(error.status || 500).json({
+      error: 'Failed to get filter options',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/courses/neo4j/skills
+ * Get all available skills from Neo4j for dropdown selection
+ */
+router.get('/neo4j/skills', async (req, res) => {
+  try {
+    const skills = await neo4jApi.getAllSkills();
+    res.json(skills);
+  } catch (error) {
+    console.error('Get Neo4j skills error:', error);
+    res.status(error.status || 500).json({
+      error: 'Failed to get skills',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/courses/neo4j/:courseId
+ * Get a single course from Neo4j by ID
+ */
+router.get('/neo4j/:courseId',
+  async (req, res) => {
+    try {
+      const { courseId } = req.params;
+      
+      const course = await neo4jApi.getCourseById(courseId);
+      
+      if (!course) {
+        return res.status(404).json({ error: 'Course not found in Neo4j' });
+      }
+      
+      // Transform URL to FutureX format
+      res.json({
+        ...course,
+        url: toFuturexUrl({ url: course.url, course_id: course.course_id })
+      });
+    } catch (error) {
+      console.error('Get Neo4j course error:', error);
+      res.status(error.status || 500).json({
+        error: 'Failed to get course',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * PATCH /api/courses/neo4j/:courseId
+ * Update course metadata in Neo4j (admin only)
+ * NOTE: Neo4j NELC API is READ-ONLY. This endpoint now stores overrides in PostgreSQL.
+ */
+router.patch('/neo4j/:courseId',
+  isTrainingOfficer,
+  [
+    body('subject').optional().isString(),
+    body('domains').optional().isArray({ max: 2 }),
+    body('domains.*').optional().isString(),
+    body('difficulty_level').optional().isString(),
+    body('name_ar').optional().isString(),
+    body('name_en').optional().isString(),
+    body('description_ar').optional().isString(),
+    body('description_en').optional().isString(),
+    body('provider').optional().isString(),
+    body('university').optional().isString(),
+    body('duration_hours').optional().isFloat({ min: 0 }),
+    body('language').optional().isString(),
+    body('url').optional().isString()
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { courseId } = req.params;
+      const updates = req.body;
+
+      // Remove empty fields
+      const cleanUpdates = {};
+      for (const [key, value] of Object.entries(updates)) {
+        if (value !== undefined && value !== '') {
+          cleanUpdates[key] = value;
+        }
+      }
+
+      if (Object.keys(cleanUpdates).length === 0) {
+        return res.status(400).json({ error: 'No fields to update' });
+      }
+
+      console.log(`📝 Admin updating Neo4j course (storing in PostgreSQL): ${courseId}`, cleanUpdates);
+
+      // Neo4j API is READ-ONLY, so we store overrides in PostgreSQL instead
+      // First, check if course_overrides table exists, create if not
+      try {
+        await db.query(`
+          CREATE TABLE IF NOT EXISTS course_overrides (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            course_id VARCHAR(255) NOT NULL UNIQUE,
+            overrides JSONB NOT NULL DEFAULT '{}',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+      } catch (tableError) {
+        console.log('Table may already exist:', tableError.message);
+      }
+
+      // Upsert the override
+      const result = await db.query(`
+        INSERT INTO course_overrides (course_id, overrides, updated_at)
+        VALUES ($1, $2, CURRENT_TIMESTAMP)
+        ON CONFLICT (course_id) DO UPDATE SET
+          overrides = course_overrides.overrides || $2,
+          updated_at = CURRENT_TIMESTAMP
+        RETURNING *
+      `, [courseId, JSON.stringify(cleanUpdates)]);
+
+      console.log(`✅ Course overrides saved to PostgreSQL for: ${courseId}`);
+
+      res.json({
+        success: true,
+        message: 'تم حفظ التعديلات محلياً (قاعدة بيانات Neo4j للقراءة فقط)',
+        course_id: courseId,
+        updated_fields: Object.keys(cleanUpdates),
+        stored_locally: true,
+        override: result.rows[0]
+      });
+    } catch (error) {
+      console.error('Update Neo4j course error:', error);
+      res.status(error.status || 500).json({
+        error: 'Failed to update course',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * DELETE /api/courses/neo4j/:courseId
+ * Delete a course from Neo4j completely (admin only)
+ */
+router.delete('/neo4j/:courseId',
+  isTrainingOfficer,
+  async (req, res) => {
+    try {
+      const { courseId } = req.params;
+
+      console.log(`🗑️ Admin deleting Neo4j course: ${courseId}`);
+
+      // First check if course exists
+      const course = await neo4jApi.getCourseById(courseId);
+      if (!course) {
+        return res.status(404).json({ error: 'Course not found in Neo4j' });
+      }
+
+      // Delete the course and all its relationships
+      const result = await neo4jApi.deleteCourseComplete(courseId);
+
+      // Also delete enrichment from PostgreSQL if exists
+      try {
+        await db.query('DELETE FROM course_enrichments WHERE course_id = $1', [courseId]);
+      } catch (dbError) {
+        console.log('Note: Could not delete enrichment from PostgreSQL:', dbError.message);
+      }
+
+      res.json({
+        success: true,
+        message: 'Course deleted successfully from Neo4j',
+        course_id: courseId,
+        course_name: course.name_ar,
+        result: result
+      });
+    } catch (error) {
+      console.error('Delete Neo4j course error:', error);
+      res.status(error.status || 500).json({
+        error: 'Failed to delete course',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * POST /api/courses/neo4j/:courseId/skills
+ * Add a skill relationship to a course (admin only)
+ * NOTE: Neo4j is READ-ONLY. Skill changes are stored locally in PostgreSQL.
+ */
+router.post('/neo4j/:courseId/skills',
+  isTrainingOfficer,
+  [
+    body('skill_name').notEmpty().withMessage('Skill name is required'),
+    body('relevance_score').optional().isFloat({ min: 0, max: 1 })
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { courseId } = req.params;
+      const { skill_name, relevance_score = 0.8 } = req.body;
+
+      console.log(`➕ Admin adding skill to course (storing locally): ${courseId} -> ${skill_name}`);
+
+      // Neo4j is READ-ONLY, store skill changes in PostgreSQL
+      // Ensure table exists
+      try {
+        await db.query(`
+          CREATE TABLE IF NOT EXISTS course_skill_overrides (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            course_id VARCHAR(255) NOT NULL,
+            skill_name VARCHAR(255) NOT NULL,
+            action VARCHAR(20) NOT NULL DEFAULT 'add',
+            relevance_score FLOAT DEFAULT 0.8,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(course_id, skill_name)
+          )
+        `);
+      } catch (tableError) {
+        console.log('Table may already exist');
+      }
+
+      // Insert or update skill override (add)
+      await db.query(`
+        INSERT INTO course_skill_overrides (course_id, skill_name, action, relevance_score)
+        VALUES ($1, $2, 'add', $3)
+        ON CONFLICT (course_id, skill_name) DO UPDATE SET
+          action = 'add',
+          relevance_score = $3,
+          created_at = CURRENT_TIMESTAMP
+      `, [courseId, skill_name, relevance_score]);
+
+      console.log(`✅ Skill override saved locally: ${courseId} -> ${skill_name}`);
+
+      res.json({
+        success: true,
+        message: 'تمت إضافة المهارة محلياً',
+        course_id: courseId,
+        skill_name: skill_name,
+        stored_locally: true
+      });
+    } catch (error) {
+      console.error('Add skill to course error:', error);
+      res.status(error.status || 500).json({
+        error: 'Failed to add skill to course',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * DELETE /api/courses/neo4j/:courseId/skills/:skillName
+ * Remove a skill relationship from a course (admin only)
+ * NOTE: Neo4j is READ-ONLY. Skill changes are stored locally in PostgreSQL.
+ */
+router.delete('/neo4j/:courseId/skills/:skillName',
+  isTrainingOfficer,
+  async (req, res) => {
+    try {
+      const { courseId, skillName } = req.params;
+      const decodedSkillName = decodeURIComponent(skillName);
+
+      console.log(`🗑️ Admin removing skill from course (storing locally): ${courseId} -> ${decodedSkillName}`);
+
+      // Neo4j is READ-ONLY, store skill removal in PostgreSQL
+      // Ensure table exists
+      try {
+        await db.query(`
+          CREATE TABLE IF NOT EXISTS course_skill_overrides (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            course_id VARCHAR(255) NOT NULL,
+            skill_name VARCHAR(255) NOT NULL,
+            action VARCHAR(20) NOT NULL DEFAULT 'add',
+            relevance_score FLOAT DEFAULT 0.8,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(course_id, skill_name)
+          )
+        `);
+      } catch (tableError) {
+        console.log('Table may already exist');
+      }
+
+      // Insert or update skill override (remove)
+      await db.query(`
+        INSERT INTO course_skill_overrides (course_id, skill_name, action)
+        VALUES ($1, $2, 'remove')
+        ON CONFLICT (course_id, skill_name) DO UPDATE SET
+          action = 'remove',
+          created_at = CURRENT_TIMESTAMP
+      `, [courseId, decodedSkillName]);
+
+      console.log(`✅ Skill removal saved locally: ${courseId} -> ${decodedSkillName}`);
+
+      res.json({
+        success: true,
+        message: 'تمت إزالة المهارة محلياً',
+        course_id: courseId,
+        skill_name: decodedSkillName,
+        stored_locally: true
+      });
+    } catch (error) {
+      console.error('Remove skill from course error:', error);
+      res.status(error.status || 500).json({
+        error: 'Failed to remove skill from course',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * POST /api/courses/neo4j/:courseId/toggle-hidden
+ * Toggle course hidden status (hide from recommendations)
+ * Admin only
+ */
+router.post('/neo4j/:courseId/toggle-hidden',
+  isTrainingOfficer,
+  async (req, res) => {
+    try {
+      const { courseId } = req.params;
+      const { hidden } = req.body; // Optional: explicitly set hidden status
+
+      console.log(`👁️ Admin toggling course visibility: ${courseId}`);
+
+      // Ensure hidden_courses table exists
+      await db.query(`
+        CREATE TABLE IF NOT EXISTS hidden_courses (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          course_id VARCHAR(255) NOT NULL UNIQUE,
+          hidden_by UUID,
+          hidden_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      // Check current status
+      const existingResult = await db.query(
+        'SELECT * FROM hidden_courses WHERE course_id = $1',
+        [courseId]
+      );
+      
+      const isCurrentlyHidden = existingResult.rows.length > 0;
+      const shouldHide = hidden !== undefined ? hidden : !isCurrentlyHidden;
+
+      if (shouldHide && !isCurrentlyHidden) {
+        // Hide the course
+        await db.query(
+          'INSERT INTO hidden_courses (course_id, hidden_by) VALUES ($1, $2)',
+          [courseId, req.user?.id]
+        );
+        console.log(`🙈 Course hidden: ${courseId}`);
+        
+        res.json({
+          success: true,
+          message: 'تم إخفاء الدورة من التوصيات',
+          course_id: courseId,
+          hidden: true
+        });
+      } else if (!shouldHide && isCurrentlyHidden) {
+        // Unhide the course
+        await db.query(
+          'DELETE FROM hidden_courses WHERE course_id = $1',
+          [courseId]
+        );
+        console.log(`👁️ Course unhidden: ${courseId}`);
+        
+        res.json({
+          success: true,
+          message: 'تم إظهار الدورة في التوصيات',
+          course_id: courseId,
+          hidden: false
+        });
+      } else {
+        res.json({
+          success: true,
+          message: shouldHide ? 'الدورة مخفية بالفعل' : 'الدورة ظاهرة بالفعل',
+          course_id: courseId,
+          hidden: shouldHide
+        });
+      }
+    } catch (error) {
+      console.error('Toggle course hidden error:', error);
+      res.status(error.status || 500).json({
+        error: 'Failed to toggle course visibility',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * Helper function to map NELC level to our difficulty format
+ */
+function mapNelcLevel(level) {
+  if (!level) return 'beginner';
+  
+  const levelLower = level.toLowerCase();
+  if (levelLower.includes('beginner') || levelLower.includes('مبتدئ') || levelLower === '1') {
+    return 'beginner';
+  }
+  if (levelLower.includes('intermediate') || levelLower.includes('متوسط') || levelLower === '2') {
+    return 'intermediate';
+  }
+  if (levelLower.includes('advanced') || levelLower.includes('متقدم') || levelLower === '3') {
+    return 'advanced';
+  }
+  return 'beginner';
+}
+
+/**
  * POST /api/courses/upload-csv
  * Bulk upload courses from CSV file with progress tracking
  */
 router.post('/upload-csv', 
-  isAdmin, 
+  isTrainingOfficer, 
   upload.single('file'), 
   async (req, res) => {
     console.log('📤 Starting CSV upload process...');
@@ -518,8 +1428,14 @@ router.get('/',
 
       const countResult = await db.query(countQuery, countParams);
 
+      // Transform URLs to FutureX format
+      const coursesWithFuturexUrls = result.rows.map(course => ({
+        ...course,
+        url: toFuturexUrl({ url: course.url, nelc_course_id: course.nelc_course_id, course_id: course.id })
+      }));
+
       res.json({
-        courses: result.rows,
+        courses: coursesWithFuturexUrls,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
@@ -569,7 +1485,12 @@ router.get('/:id',
         return res.status(404).json({ error: 'Course not found' });
       }
 
-      res.json(result.rows[0]);
+      // Transform URL to FutureX format
+      const course = result.rows[0];
+      res.json({
+        ...course,
+        url: toFuturexUrl({ url: course.url, nelc_course_id: course.nelc_course_id, course_id: course.id })
+      });
     } catch (error) {
       console.error('Get course error:', error);
       res.status(500).json({ 
@@ -679,7 +1600,7 @@ router.patch('/:id',
  * Delete course from PostgreSQL and Neo4j
  */
 router.delete('/:id', 
-  isAdmin,
+  isTrainingOfficer,
   [param('id').isUUID()],
   async (req, res) => {
     try {
@@ -735,7 +1656,7 @@ router.delete('/:id',
  * Manually sync a single course to Neo4j
  */
 router.post('/:id/sync-neo4j', 
-  isAdmin,
+  isTrainingOfficer,
   [param('id').isUUID()],
   async (req, res) => {
     try {
@@ -815,7 +1736,7 @@ router.post('/:id/sync-neo4j',
  * Bulk sync all unsynced courses to Neo4j
  */
 router.post('/sync-all', 
-  isAdmin,
+  isTrainingOfficer,
   async (req, res) => {
     try {
       const result = await db.query(`
@@ -887,5 +1808,400 @@ router.post('/sync-all',
       });
     }
 });
+
+/**
+ * POST /api/courses/enrich/:courseId
+ * Enrich a single course from Neo4j with AI-extracted metadata
+ * Stores enrichment in PostgreSQL (since Neo4j is read-only)
+ */
+router.post('/enrich/:courseId',
+  isTrainingOfficer,
+  async (req, res) => {
+    try {
+      const { courseId } = req.params;
+      
+      console.log(`🤖 Starting AI enrichment for course: ${courseId}`);
+      
+      // Fetch course from Neo4j
+      const query = `
+        MATCH (c:Course {course_id: '${courseId}'})
+        RETURN c.course_id as course_id, c.name_ar as name_ar, c.name_en as name_en,
+               c.description_ar as description_ar, c.description_en as description_en,
+               c.subject as subject, c.provider as provider, c.difficulty_level as difficulty_level,
+               c.duration_hours as duration_hours
+      `;
+      
+      const courseData = await neo4jApi.makeRequest('POST', '/query', { data: { query } });
+      
+      if (!courseData || (Array.isArray(courseData) && courseData.length === 0)) {
+        return res.status(404).json({ error: 'Course not found in Neo4j' });
+      }
+      
+      const course = Array.isArray(courseData) ? courseData[0] : courseData;
+      
+      // Enrich with AI
+      const enrichedData = await courseEnricher.enrichCourse(course);
+      
+      // Store enrichment in PostgreSQL (Neo4j is read-only)
+      const upsertResult = await db.query(`
+        INSERT INTO course_enrichments (
+          course_id, extracted_skills, prerequisite_skills, learning_outcomes,
+          target_audience, career_paths, industry_tags, topics,
+          difficulty_assessment, quality_indicators, keywords_ar, keywords_en,
+          summary_ar, summary_en, enrichment_version, course_name_ar, course_name_en
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        ON CONFLICT (course_id) DO UPDATE SET
+          extracted_skills = $2,
+          prerequisite_skills = $3,
+          learning_outcomes = $4,
+          target_audience = $5,
+          career_paths = $6,
+          industry_tags = $7,
+          topics = $8,
+          difficulty_assessment = $9,
+          quality_indicators = $10,
+          keywords_ar = $11,
+          keywords_en = $12,
+          summary_ar = $13,
+          summary_en = $14,
+          enrichment_version = $15,
+          updated_at = CURRENT_TIMESTAMP
+        RETURNING *
+      `, [
+        courseId,
+        JSON.stringify(enrichedData.extracted_skills || []),
+        JSON.stringify(enrichedData.prerequisite_skills || []),
+        JSON.stringify(enrichedData.learning_outcomes || []),
+        JSON.stringify(enrichedData.target_audience || {}),
+        JSON.stringify(enrichedData.career_paths || []),
+        JSON.stringify(enrichedData.industry_tags || []),
+        JSON.stringify(enrichedData.topics || []),
+        JSON.stringify(enrichedData.difficulty_assessment || {}),
+        JSON.stringify(enrichedData.quality_indicators || {}),
+        JSON.stringify(enrichedData.keywords_ar || []),
+        JSON.stringify(enrichedData.keywords_en || []),
+        enrichedData.summary_ar || '',
+        enrichedData.summary_en || '',
+        enrichedData.enrichment_version || '1.0',
+        course.name_ar || '',
+        course.name_en || ''
+      ]);
+      
+      console.log(`✅ Course enriched and saved to PostgreSQL: ${courseId}`);
+      
+      // Also save suggested domains to course_overrides for immediate use
+      if (enrichedData.suggested_domains && enrichedData.suggested_domains.length > 0) {
+        try {
+          await db.query(`
+            CREATE TABLE IF NOT EXISTS course_overrides (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              course_id VARCHAR(255) NOT NULL UNIQUE,
+              overrides JSONB NOT NULL DEFAULT '{}',
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+          `);
+          
+          const domainsOverride = {
+            domains: enrichedData.suggested_domains,
+            subject: enrichedData.suggested_domains[0] || course.subject
+          };
+          
+          await db.query(`
+            INSERT INTO course_overrides (course_id, overrides, updated_at)
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (course_id) DO UPDATE SET
+              overrides = course_overrides.overrides || $2,
+              updated_at = CURRENT_TIMESTAMP
+          `, [courseId, JSON.stringify(domainsOverride)]);
+          
+          console.log(`✅ Domains saved to course_overrides: ${enrichedData.suggested_domains.join(', ')}`);
+        } catch (domainError) {
+          console.log('Note: Could not save domains to overrides:', domainError.message);
+        }
+      }
+      
+      res.json({
+        success: true,
+        course_id: courseId,
+        enrichment: enrichedData,
+        stored_in: 'postgresql'
+      });
+    } catch (error) {
+      console.error('❌ Course enrichment error:', error);
+      
+      if (error.message?.includes('OPENAI_API_KEY')) {
+        return res.status(503).json({
+          error: 'OpenAI API not configured',
+          message: 'Please set OPENAI_API_KEY in environment variables',
+          code: 'CONFIG_ERROR'
+        });
+      }
+      
+      res.status(500).json({
+        error: 'Failed to enrich course',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * POST /api/courses/enrich-batch
+ * Enrich multiple courses from Neo4j with AI
+ * Supports pagination and rate limiting
+ */
+router.post('/enrich-batch',
+  isTrainingOfficer,
+  [
+    body('skip').optional().isInt({ min: 0 }),
+    body('limit').optional().isInt({ min: 1, max: 50 }),
+    body('filter').optional().isObject()
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { skip = 0, limit = 10, filter = {} } = req.body;
+      
+      console.log(`🤖 Starting batch enrichment: skip=${skip}, limit=${limit}`);
+      
+      // Build filter conditions
+      const conditions = [];
+      if (filter.difficulty_level) {
+        conditions.push(`c.difficulty_level = '${filter.difficulty_level}'`);
+      }
+      if (filter.provider) {
+        conditions.push(`c.provider CONTAINS '${filter.provider}'`);
+      }
+      if (filter.subject) {
+        conditions.push(`c.subject CONTAINS '${filter.subject}'`);
+      }
+      // Only enrich courses that haven't been enriched yet
+      if (filter.not_enriched) {
+        conditions.push(`c.enriched_at IS NULL`);
+      }
+      
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      
+      // Fetch courses from Neo4j
+      const query = `
+        MATCH (c:Course)
+        ${whereClause}
+        RETURN c.course_id as course_id, c.name_ar as name_ar, c.name_en as name_en,
+               c.description_ar as description_ar, c.description_en as description_en,
+               c.subject as subject, c.provider as provider, c.difficulty_level as difficulty_level,
+               c.duration_hours as duration_hours
+        ORDER BY c.name_ar
+        SKIP ${skip}
+        LIMIT ${limit}
+      `;
+      
+      const courses = await neo4jApi.makeRequest('POST', '/query', { data: { query } });
+      
+      if (!courses || courses.length === 0) {
+        return res.json({
+          success: true,
+          message: 'No courses to enrich',
+          processed: 0
+        });
+      }
+      
+      console.log(`📚 Found ${courses.length} courses to enrich`);
+      
+      // Enrich batch with progress tracking
+      const results = await courseEnricher.enrichBatch(courses, {
+        batchSize: 3,
+        delayBetweenBatches: 1500,
+        onProgress: (progress) => {
+          console.log(`⏳ Progress: ${progress.percent}% (${progress.processed}/${progress.total})`);
+        }
+      });
+      
+      // Update Neo4j with enriched data
+      let neo4jUpdated = 0;
+      for (const enriched of results.enriched) {
+        try {
+          await neo4jApi.updateCourseEnrichment(enriched.course_id, enriched);
+          neo4jUpdated++;
+        } catch (err) {
+          console.error(`Failed to update Neo4j for course ${enriched.course_id}:`, err.message);
+        }
+      }
+      
+      console.log(`✅ Batch enrichment complete: ${results.success} success, ${results.failed} failed`);
+      
+      res.json({
+        success: true,
+        total: results.total,
+        enriched: results.success,
+        failed: results.failed,
+        neo4j_updated: neo4jUpdated,
+        errors: results.errors.slice(0, 10), // Limit errors in response
+        sample_enrichment: results.enriched[0] || null
+      });
+    } catch (error) {
+      console.error('❌ Batch enrichment error:', error);
+      
+      if (error.message?.includes('OPENAI_API_KEY')) {
+        return res.status(503).json({
+          error: 'OpenAI API not configured',
+          message: 'Please set OPENAI_API_KEY in environment variables',
+          code: 'CONFIG_ERROR'
+        });
+      }
+      
+      res.status(500).json({
+        error: 'Failed to enrich courses',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * POST /api/courses/extract-skills/:courseId
+ * Quick skill extraction for a single course (lighter than full enrichment)
+ */
+router.post('/extract-skills/:courseId',
+  isTrainingOfficer,
+  async (req, res) => {
+    try {
+      const { courseId } = req.params;
+      
+      console.log(`🔍 Extracting skills for course: ${courseId}`);
+      
+      // Fetch course from Neo4j
+      const query = `
+        MATCH (c:Course {course_id: '${courseId}'})
+        RETURN c.course_id as course_id, c.name_ar as name_ar, c.name_en as name_en,
+               c.description_ar as description_ar, c.description_en as description_en,
+               c.subject as subject
+      `;
+      
+      const courseData = await neo4jApi.makeRequest('POST', '/query', { data: { query } });
+      
+      if (!courseData || (Array.isArray(courseData) && courseData.length === 0)) {
+        return res.status(404).json({ error: 'Course not found in Neo4j' });
+      }
+      
+      const course = Array.isArray(courseData) ? courseData[0] : courseData;
+      
+      // Extract skills only (quick operation)
+      const skills = await courseEnricher.extractSkillsOnly(course);
+      
+      console.log(`✅ Extracted ${skills.length} skills for course: ${courseId}`);
+      
+      res.json({
+        success: true,
+        course_id: courseId,
+        course_name: course.name_ar || course.name_en,
+        extracted_skills: skills
+      });
+    } catch (error) {
+      console.error('❌ Skill extraction error:', error);
+      res.status(500).json({
+        error: 'Failed to extract skills',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/courses/enrichment-stats
+ * Get statistics about enrichment progress
+ */
+router.get('/enrichment-stats',
+  isTrainingOfficer,
+  async (req, res) => {
+    try {
+      // Count total courses from Neo4j
+      const totalQuery = `MATCH (c:Course) RETURN count(c) as total`;
+      const totalResult = await neo4jApi.makeRequest('POST', '/query', { data: { query: totalQuery } });
+      
+      // Count enriched courses from PostgreSQL
+      const enrichedResult = await db.query('SELECT COUNT(*) as count FROM course_enrichments');
+      
+      // Count courses with extracted skills from PostgreSQL
+      const withSkillsResult = await db.query(
+        "SELECT COUNT(*) as count FROM course_enrichments WHERE extracted_skills IS NOT NULL AND extracted_skills != '[]'::jsonb"
+      );
+      
+      const total = totalResult?.total || totalResult?.[0]?.total || 0;
+      const enriched = parseInt(enrichedResult.rows[0]?.count || 0);
+      const withSkills = parseInt(withSkillsResult.rows[0]?.count || 0);
+      
+      res.json({
+        total_courses: total,
+        enriched_courses: enriched,
+        courses_with_extracted_skills: withSkills,
+        enrichment_percentage: total > 0 ? Math.round((enriched / total) * 100) : 0,
+        remaining: total - enriched
+      });
+    } catch (error) {
+      console.error('❌ Get enrichment stats error:', error);
+      res.status(500).json({
+        error: 'Failed to get enrichment stats',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * GET /api/courses/neo4j/:courseId/enrichment
+ * Get enrichment data for a specific course
+ */
+router.get('/neo4j/:courseId/enrichment',
+  async (req, res) => {
+    try {
+      const { courseId } = req.params;
+      
+      const query = `
+        MATCH (c:Course {course_id: '${courseId}'})
+        RETURN c.course_id as course_id,
+               c.extracted_skills as extracted_skills,
+               c.prerequisite_skills as prerequisite_skills,
+               c.learning_outcomes as learning_outcomes,
+               c.target_audience as target_audience,
+               c.career_paths as career_paths,
+               c.industry_tags as industry_tags,
+               c.topics as topics,
+               c.difficulty_assessment as difficulty_assessment,
+               c.quality_indicators as quality_indicators,
+               c.keywords_ar as keywords_ar,
+               c.keywords_en as keywords_en,
+               c.summary_ar as summary_ar,
+               c.summary_en as summary_en,
+               c.enriched_at as enriched_at,
+               c.enrichment_version as enrichment_version
+      `;
+      
+      const result = await neo4jApi.makeRequest('POST', '/query', { data: { query } });
+      
+      if (!result || (Array.isArray(result) && result.length === 0)) {
+        return res.status(404).json({ error: 'Course not found' });
+      }
+      
+      const enrichment = Array.isArray(result) ? result[0] : result;
+      
+      res.json({
+        course_id: courseId,
+        is_enriched: !!enrichment.enriched_at,
+        enrichment: enrichment
+      });
+    } catch (error) {
+      console.error('Get course enrichment error:', error);
+      res.status(500).json({
+        error: 'Failed to get course enrichment',
+        message: error.message
+      });
+    }
+  }
+);
 
 module.exports = router;

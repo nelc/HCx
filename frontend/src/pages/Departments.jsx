@@ -9,11 +9,15 @@ import {
   RectangleGroupIcon,
   UsersIcon,
   ChevronLeftIcon,
+  SparklesIcon,
+  DocumentTextIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/outline';
 import { Dialog } from '@headlessui/react';
 import toast from 'react-hot-toast';
 import api from '../utils/api';
 import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
+import DomainGeneratorModal from '../components/DomainGeneratorModal';
 
 export default function Departments() {
   const [allItems, setAllItems] = useState([]);
@@ -23,10 +27,15 @@ export default function Departments() {
   const [modalType, setModalType] = useState('sector'); // 'sector', 'department', 'section'
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [itemToDelete, setItemToDelete] = useState(null);
+  const [showDomainGenerator, setShowDomainGenerator] = useState(false);
+  const [selectedDepartmentForDomains, setSelectedDepartmentForDomains] = useState(null);
   const [form, setForm] = useState({
     name_ar: '',
     type: 'sector',
     parent_id: '',
+    objective_ar: '',
+    objective_en: '',
+    responsibilities: [],
   });
 
   useEffect(() => {
@@ -55,6 +64,9 @@ export default function Departments() {
       name_ar: '',
       type: type,
       parent_id: parentId || '',
+      objective_ar: '',
+      objective_en: '',
+      responsibilities: [],
     });
     setShowModal(true);
   };
@@ -66,6 +78,9 @@ export default function Departments() {
       name_ar: item.name_ar,
       type: item.type,
       parent_id: item.parent_id || '',
+      objective_ar: item.objective_ar || '',
+      objective_en: item.objective_en || '',
+      responsibilities: item.responsibilities || [],
     });
     setShowModal(true);
   };
@@ -93,7 +108,10 @@ export default function Departments() {
       const data = { 
         name_ar: form.name_ar.trim(),
         type: modalType,
-        parent_id: form.parent_id && form.parent_id !== '' ? form.parent_id : null
+        parent_id: form.parent_id && form.parent_id !== '' ? form.parent_id : null,
+        objective_ar: form.objective_ar?.trim() || null,
+        objective_en: form.objective_en?.trim() || null,
+        responsibilities: form.responsibilities || [],
       };
       
       // Ensure sector has no parent
@@ -112,10 +130,6 @@ export default function Departments() {
       fetchAllItems();
     } catch (error) {
       console.error('Department save error:', error);
-      console.error('Error response:', error.response);
-      console.error('Error response data:', error.response?.data);
-      console.error('Error response status:', error.response?.status);
-      
       const errorMessage = error.response?.data?.error || 
                           error.response?.data?.message || 
                           error.response?.data?.errors?.[0]?.msg ||
@@ -145,6 +159,34 @@ export default function Departments() {
     }
   };
 
+  const addResponsibility = () => {
+    setForm({
+      ...form,
+      responsibilities: [...form.responsibilities, { text_ar: '', text_en: '' }]
+    });
+  };
+
+  const updateResponsibility = (index, field, value) => {
+    const updated = [...form.responsibilities];
+    updated[index] = { ...updated[index], [field]: value };
+    setForm({ ...form, responsibilities: updated });
+  };
+
+  const removeResponsibility = (index) => {
+    const updated = form.responsibilities.filter((_, i) => i !== index);
+    setForm({ ...form, responsibilities: updated });
+  };
+
+  const openDomainGenerator = (dept) => {
+    if (!dept.objective_ar && !dept.objective_en && 
+        (!dept.responsibilities || dept.responsibilities.length === 0)) {
+      toast.error('يجب تحديد الهدف أو المسؤوليات أولاً قبل توليد المجالات');
+      return;
+    }
+    setSelectedDepartmentForDomains(dept);
+    setShowDomainGenerator(true);
+  };
+
   const getModalTitle = () => {
     if (editingItem) {
       return modalType === 'sector' ? 'تعديل القطاع' : 
@@ -170,6 +212,11 @@ export default function Departments() {
 
   const getParentLabel = () => {
     return modalType === 'department' ? 'القطاع' : 'الإدارة';
+  };
+
+  const hasObjectiveOrResponsibilities = (item) => {
+    return item.objective_ar || item.objective_en || 
+           (item.responsibilities && item.responsibilities.length > 0);
   };
 
   const SectorCard = ({ sector }) => {
@@ -203,6 +250,10 @@ export default function Departments() {
         
         <h3 className="font-bold text-lg text-slate-800 mb-2">{sector.name_ar}</h3>
         
+        {sector.objective_ar && (
+          <p className="text-sm text-slate-600 mb-2 line-clamp-2">{sector.objective_ar}</p>
+        )}
+        
         <div className="flex items-center gap-4 text-sm text-slate-500 mb-3">
           <div className="flex items-center gap-1">
             <BuildingOffice2Icon className="w-4 h-4" />
@@ -212,16 +263,32 @@ export default function Departments() {
             <UsersIcon className="w-4 h-4" />
             <span>{sector.employee_count || 0} موظف</span>
           </div>
+          {hasObjectiveOrResponsibilities(sector) && (
+            <div className="flex items-center gap-1 text-success-600">
+              <DocumentTextIcon className="w-4 h-4" />
+            </div>
+          )}
         </div>
         
-        <button
-          onClick={() => openCreateModal('department', sector.id)}
-          className="w-full py-2 text-sm text-primary-600 hover:text-primary-700 hover:bg-primary-50 rounded-lg transition-colors flex items-center justify-center gap-1"
-          title="إضافة إدارة جديدة في هذا القطاع"
-        >
-          <PlusIcon className="w-4 h-4" />
-          إضافة إدارة
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => openCreateModal('department', sector.id)}
+            className="flex-1 py-2 text-sm text-primary-600 hover:text-primary-700 hover:bg-primary-50 rounded-lg transition-colors flex items-center justify-center gap-1"
+            title="إضافة إدارة جديدة في هذا القطاع"
+          >
+            <PlusIcon className="w-4 h-4" />
+            إضافة إدارة
+          </button>
+          {hasObjectiveOrResponsibilities(sector) && (
+            <button
+              onClick={() => openDomainGenerator(sector)}
+              className="py-2 px-3 text-sm text-accent-600 hover:text-accent-700 hover:bg-accent-50 rounded-lg transition-colors flex items-center gap-1"
+              title="توليد المجالات والمهارات"
+            >
+              <SparklesIcon className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </motion.div>
     );
   };
@@ -263,6 +330,10 @@ export default function Departments() {
           </p>
         )}
         
+        {department.objective_ar && (
+          <p className="text-xs text-slate-600 mb-2 line-clamp-2">{department.objective_ar}</p>
+        )}
+        
         <div className="flex items-center gap-3 text-xs text-slate-500 mb-2">
           <div className="flex items-center gap-1">
             <RectangleGroupIcon className="w-3.5 h-3.5" />
@@ -272,16 +343,32 @@ export default function Departments() {
             <UsersIcon className="w-3.5 h-3.5" />
             <span>{department.employee_count || 0} موظف</span>
           </div>
+          {hasObjectiveOrResponsibilities(department) && (
+            <div className="flex items-center gap-1 text-success-600">
+              <DocumentTextIcon className="w-3.5 h-3.5" />
+            </div>
+          )}
         </div>
         
-        <button
-          onClick={() => openCreateModal('section', department.id)}
-          className="w-full py-1.5 text-xs text-accent-600 hover:text-accent-700 hover:bg-accent-50 rounded-lg transition-colors flex items-center justify-center gap-1"
-          title="إضافة قسم جديد في هذه الإدارة"
-        >
-          <PlusIcon className="w-3.5 h-3.5" />
-          إضافة قسم
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => openCreateModal('section', department.id)}
+            className="flex-1 py-1.5 text-xs text-accent-600 hover:text-accent-700 hover:bg-accent-50 rounded-lg transition-colors flex items-center justify-center gap-1"
+            title="إضافة قسم جديد في هذه الإدارة"
+          >
+            <PlusIcon className="w-3.5 h-3.5" />
+            إضافة قسم
+          </button>
+          {hasObjectiveOrResponsibilities(department) && (
+            <button
+              onClick={() => openDomainGenerator(department)}
+              className="py-1.5 px-2 text-xs text-accent-600 hover:text-accent-700 hover:bg-accent-50 rounded-lg transition-colors flex items-center gap-1"
+              title="توليد المجالات والمهارات"
+            >
+              <SparklesIcon className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
       </motion.div>
     );
   };
@@ -320,9 +407,20 @@ export default function Departments() {
         </p>
       )}
       
-      <div className="flex items-center gap-1 text-xs text-slate-500">
-        <UsersIcon className="w-3.5 h-3.5" />
-        <span>{section.employee_count || 0} موظف</span>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1 text-xs text-slate-500">
+          <UsersIcon className="w-3.5 h-3.5" />
+          <span>{section.employee_count || 0} موظف</span>
+        </div>
+        {hasObjectiveOrResponsibilities(section) && (
+          <button
+            onClick={() => openDomainGenerator(section)}
+            className="p-1 text-accent-600 hover:text-accent-700 hover:bg-accent-50 rounded"
+            title="توليد المجالات والمهارات"
+          >
+            <SparklesIcon className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
     </motion.div>
   );
@@ -459,7 +557,7 @@ export default function Departments() {
         <div className="fixed inset-0 bg-black/50" aria-hidden="true" />
         
         <div className="fixed inset-0 flex items-center justify-center p-4">
-          <Dialog.Panel className="bg-white rounded-2xl p-6 max-w-md w-full">
+          <Dialog.Panel className="bg-white rounded-2xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <Dialog.Title className="text-xl font-semibold text-primary-700 mb-4">
               {getModalTitle()}
             </Dialog.Title>
@@ -505,8 +603,107 @@ export default function Departments() {
                   )}
                 </div>
               )}
+
+              {/* Objective Section */}
+              <div className="border-t border-slate-100 pt-4">
+                <h3 className="font-semibold text-slate-700 mb-3 flex items-center gap-2">
+                  <DocumentTextIcon className="w-5 h-5 text-primary-600" />
+                  الهدف الرئيسي
+                </h3>
+                <div className="space-y-3">
+                  <div>
+                    <label className="label">الهدف بالعربية</label>
+                    <textarea
+                      value={form.objective_ar}
+                      onChange={(e) => setForm({ ...form, objective_ar: e.target.value })}
+                      className="input resize-none"
+                      rows={3}
+                      placeholder="أدخل الهدف الرئيسي لهذه الوحدة التنظيمية..."
+                    />
+                  </div>
+                  <div>
+                    <label className="label">الهدف بالإنجليزية</label>
+                    <textarea
+                      value={form.objective_en}
+                      onChange={(e) => setForm({ ...form, objective_en: e.target.value })}
+                      className="input resize-none"
+                      rows={3}
+                      placeholder="Enter the main objective..."
+                      dir="ltr"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Responsibilities Section */}
+              <div className="border-t border-slate-100 pt-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-slate-700 flex items-center gap-2">
+                    <DocumentTextIcon className="w-5 h-5 text-accent-600" />
+                    المسؤوليات ({form.responsibilities.length})
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={addResponsibility}
+                    className="btn btn-secondary btn-sm"
+                  >
+                    <PlusIcon className="w-4 h-4" />
+                    إضافة مسؤولية
+                  </button>
+                </div>
+                
+                {form.responsibilities.length === 0 ? (
+                  <div className="text-center py-6 bg-slate-50 rounded-lg">
+                    <DocumentTextIcon className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                    <p className="text-sm text-slate-500">لا توجد مسؤوليات مضافة</p>
+                    <button
+                      type="button"
+                      onClick={addResponsibility}
+                      className="text-sm text-primary-600 hover:text-primary-700 mt-2"
+                    >
+                      + إضافة أول مسؤولية
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-60 overflow-y-auto">
+                    {form.responsibilities.map((resp, index) => (
+                      <div key={index} className="p-3 bg-slate-50 rounded-lg">
+                        <div className="flex items-start justify-between mb-2">
+                          <span className="text-xs font-medium text-slate-500">
+                            المسؤولية {index + 1}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeResponsibility(index)}
+                            className="p-1 text-slate-400 hover:text-danger-500 rounded"
+                          >
+                            <XMarkIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <div className="space-y-2">
+                          <input
+                            type="text"
+                            value={resp.text_ar || ''}
+                            onChange={(e) => updateResponsibility(index, 'text_ar', e.target.value)}
+                            className="input text-sm"
+                            placeholder="المسؤولية بالعربية..."
+                          />
+                          <input
+                            type="text"
+                            value={resp.text_en || ''}
+                            onChange={(e) => updateResponsibility(index, 'text_en', e.target.value)}
+                            className="input text-sm"
+                            placeholder="Responsibility in English..."
+                            dir="ltr"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
               
-              <div className="flex gap-3 pt-4">
+              <div className="flex gap-3 pt-4 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
@@ -536,6 +733,16 @@ export default function Departments() {
           const typeName = itemToDelete.type === 'sector' ? 'القطاع' : itemToDelete.type === 'department' ? 'الإدارة' : 'القسم';
           return `هل أنت متأكد من حذف ${typeName} "${itemToDelete.name_ar}"؟\n\nلا يمكن التراجع عن هذا الإجراء.`;
         })() : ''}
+      />
+
+      {/* Domain Generator Modal */}
+      <DomainGeneratorModal
+        isOpen={showDomainGenerator}
+        onClose={() => {
+          setShowDomainGenerator(false);
+          setSelectedDepartmentForDomains(null);
+        }}
+        department={selectedDepartmentForDomains}
       />
     </div>
   );

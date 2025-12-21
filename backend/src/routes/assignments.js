@@ -2,6 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const db = require('../db');
 const { authenticate, isTrainingOfficer, isEmployee } = require('../middleware/auth');
+const { sendTestAssignedEmail } = require('../services/emailService');
 
 const router = express.Router();
 
@@ -223,6 +224,17 @@ router.post('/', authenticate, isTrainingOfficer, [
           `A new assessment has been assigned to you: ${testCheck.rows[0].title_en}`,
           JSON.stringify({ test_id, assignment_id: result.rows[0].id })
         ]);
+        
+        // Send email notification
+        const userResult = await db.query('SELECT email, name_ar FROM users WHERE id = $1', [userId]);
+        if (userResult.rows.length > 0) {
+          const user = userResult.rows[0];
+          sendTestAssignedEmail(user.email, user.name_ar, {
+            title_ar: testCheck.rows[0].title_ar,
+            title_en: testCheck.rows[0].title_en,
+            due_date: due_date
+          }).catch(err => console.error('Failed to send test assigned email:', err));
+        }
       }
     }
     
@@ -297,6 +309,17 @@ router.post('/department', authenticate, isTrainingOfficer, [
           `تم تعيين تقييم جديد لك: ${testCheck.rows[0].title_ar}`,
           `A new assessment has been assigned to you: ${testCheck.rows[0].title_en}`
         ]);
+        
+        // Send email notification
+        const userResult = await db.query('SELECT email, name_ar FROM users WHERE id = $1', [userId]);
+        if (userResult.rows.length > 0) {
+          const user = userResult.rows[0];
+          sendTestAssignedEmail(user.email, user.name_ar, {
+            title_ar: testCheck.rows[0].title_ar,
+            title_en: testCheck.rows[0].title_en,
+            due_date: due_date
+          }).catch(err => console.error('Failed to send test assigned email:', err));
+        }
       }
     }
     
@@ -313,6 +336,29 @@ router.post('/department', authenticate, isTrainingOfficer, [
 // Start test (employee)
 router.post('/:id/start', authenticate, async (req, res) => {
   try {
+    // First, check if the assignment exists and belongs to the user
+    const existing = await db.query(`
+      SELECT * FROM test_assignments
+      WHERE id = $1 AND user_id = $2
+    `, [req.params.id, req.user.id]);
+    
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+    
+    const assignment = existing.rows[0];
+    
+    // If already in_progress, return success (idempotent behavior)
+    if (assignment.status === 'in_progress') {
+      return res.json(assignment);
+    }
+    
+    // If already completed, don't allow restart
+    if (assignment.status === 'completed') {
+      return res.status(400).json({ error: 'Assignment already completed' });
+    }
+    
+    // Start the test (status is 'pending')
     const result = await db.query(`
       UPDATE test_assignments
       SET status = 'in_progress', started_at = NOW()
@@ -321,7 +367,7 @@ router.post('/:id/start', authenticate, async (req, res) => {
     `, [req.params.id, req.user.id]);
     
     if (result.rows.length === 0) {
-      return res.status(400).json({ error: 'Assignment not found or already started' });
+      return res.status(400).json({ error: 'Failed to start assignment' });
     }
     
     res.json(result.rows[0]);

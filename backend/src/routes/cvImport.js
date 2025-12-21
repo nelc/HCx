@@ -5,6 +5,7 @@ const { authenticate } = require('../middleware/auth');
 const cvTextExtractor = require('../services/cvTextExtractor');
 const cvParser = require('../services/cvParser');
 const skillMapper = require('../services/skillMapper');
+const learnerSkillsApi = require('../services/learnerSkillsApi');
 
 const router = express.Router();
 
@@ -109,23 +110,72 @@ router.post('/upload', authenticate, upload.single('cv'), multerErrorHandler, as
       });
     }
 
-    // Step 3: Map confirmed skills to database skills
+    // Step 3: Call Learner Skills API to generate skills from structured CV data
+    let apiGeneratedSkills = [];
+    let apiSkillsResult = null;
+    
+    try {
+      console.log('📤 Calling Learner Skills API with CV data...');
+      
+      // Transform CV data to API format
+      const apiInput = learnerSkillsApi.transformCVDataForAPI(extractedData);
+      
+      // Call the API
+      apiSkillsResult = await learnerSkillsApi.generateSkills(apiInput);
+      
+      if (apiSkillsResult.success) {
+        // Flatten all skills from the API response
+        apiGeneratedSkills = learnerSkillsApi.flattenApiSkills(apiSkillsResult);
+        console.log(`✅ Learner Skills API returned ${apiGeneratedSkills.length} skills`);
+      } else {
+        console.warn('⚠️ Learner Skills API failed:', apiSkillsResult.error?.message);
+        // Continue without API skills - graceful degradation
+      }
+    } catch (error) {
+      console.error('❌ Learner Skills API error:', error.message);
+      // Continue without API skills - graceful degradation
+    }
+
+    // Step 4: Combine skills from OpenAI and Learner Skills API
     const confirmedSkills = extractedData.skills || [];
     const possibleSkills = extractedData.possible_skills || [];
+    
+    // Merge API-generated skills with OpenAI skills, removing duplicates
+    const allSkillsSet = new Set([
+      ...confirmedSkills.map(s => s.toLowerCase().trim()),
+      ...apiGeneratedSkills.map(s => s.toLowerCase().trim())
+    ]);
+    
+    // Create combined confirmed skills (API skills are treated as confirmed)
+    const combinedConfirmedSkills = [
+      ...confirmedSkills,
+      // Add API skills that aren't already in confirmed skills
+      ...apiGeneratedSkills.filter(apiSkill => 
+        !confirmedSkills.some(cs => cs.toLowerCase().trim() === apiSkill.toLowerCase().trim())
+      )
+    ];
 
     let mappedSkills = [];
     let groupedSkills = [];
     let mappedPossibleSkills = [];
     let groupedPossibleSkills = [];
+    let mappedApiSkills = [];
+    let groupedApiSkills = [];
     
     try {
-      // Map confirmed skills (confidence = 1.0)
-      mappedSkills = await skillMapper.mapSkills(confirmedSkills);
+      // Map confirmed skills (confidence = 1.0) - includes original + API skills
+      mappedSkills = await skillMapper.mapSkills(combinedConfirmedSkills);
       groupedSkills = await skillMapper.groupSkillsByDomain(mappedSkills);
       
       // Map possible skills (confidence = 0.6)
       mappedPossibleSkills = await skillMapper.mapSkills(possibleSkills);
       groupedPossibleSkills = await skillMapper.groupSkillsByDomain(mappedPossibleSkills);
+      
+      // Map API-generated skills separately for display
+      if (apiGeneratedSkills.length > 0) {
+        mappedApiSkills = await skillMapper.mapSkills(apiGeneratedSkills);
+        groupedApiSkills = await skillMapper.groupSkillsByDomain(mappedApiSkills);
+      }
     } catch (error) {
       console.error('Skill mapping error:', error);
       // Continue with empty skills if mapping fails
@@ -142,14 +192,24 @@ router.post('/upload', authenticate, upload.single('cv'), multerErrorHandler, as
         education: extractedData.education || [],
         experience: extractedData.experience || [],
         certificates: extractedData.certificates || [],
-        skills: confirmedSkills,
+        skills: combinedConfirmedSkills,
         possible_skills: possibleSkills,
+        api_generated_skills: apiGeneratedSkills,
         raw_text: cvText || '',
       },
       suggestedSkills: groupedSkills || [],
       matchedSkills: mappedSkills || [],
       suggestedPossibleSkills: groupedPossibleSkills || [],
       matchedPossibleSkills: mappedPossibleSkills || [],
+      // New: API-generated skills (for display/transparency)
+      apiGeneratedSkills: {
+        raw: apiGeneratedSkills,
+        mapped: mappedApiSkills,
+        grouped: groupedApiSkills,
+        tracking_id: apiSkillsResult?.tracking_id || null,
+        success: apiSkillsResult?.success || false,
+        categorized: apiSkillsResult?.skills || null
+      },
       fileName,
       fileSize,
     });
@@ -379,6 +439,80 @@ router.get('/history', authenticate, async (req, res) => {
 });
 
 /**
+ * DELETE /api/cv-import/delete
+ * Delete CV import data and all associated skills
+ */
+router.delete('/delete', authenticate, async (req, res) => {
+  const client = await db.getClient();
+  
+  try {
+    await client.query('BEGIN');
+
+    const userId = req.user.id;
+
+    // Count skills that will be deleted (for feedback)
+    const skillsCountResult = await client.query(
+      `SELECT COUNT(*) as count FROM employee_skill_profiles WHERE user_id = $1 AND source = 'cv_import'`,
+      [userId]
+    );
+    const deletedSkillsCount = parseInt(skillsCountResult.rows[0].count) || 0;
+
+    // Delete skills imported from CV
+    await client.query(
+      `DELETE FROM employee_skill_profiles WHERE user_id = $1 AND source = 'cv_import'`,
+      [userId]
+    );
+
+    // Delete education records imported from CV
+    await client.query(
+      `DELETE FROM user_education WHERE user_id = $1 AND source = 'cv_import'`,
+      [userId]
+    );
+
+    // Delete experience records imported from CV
+    await client.query(
+      `DELETE FROM user_experience WHERE user_id = $1 AND source = 'cv_import'`,
+      [userId]
+    );
+
+    // Delete certificates imported from CV
+    await client.query(
+      `DELETE FROM user_certificates WHERE user_id = $1 AND source = 'cv_import'`,
+      [userId]
+    );
+
+    // Delete CV import history records
+    await client.query(
+      `DELETE FROM cv_imports WHERE user_id = $1`,
+      [userId]
+    );
+
+    // Clear CV-related fields from user record
+    await client.query(
+      `UPDATE users SET cv_imported = false, cv_imported_at = NULL, cv_raw_text = NULL WHERE id = $1`,
+      [userId]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      deletedSkillsCount,
+      message: `تم حذف السيرة الذاتية و ${deletedSkillsCount} مهارة مرتبطة بها بنجاح`,
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('CV delete error:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete CV data',
+      message: error.message 
+    });
+  } finally {
+    client.release();
+  }
+});
+
+/**
  * GET /api/cv-import/test-connection
  * Test CV parsing service (for debugging)
  */
@@ -393,6 +527,18 @@ router.get('/test-connection', authenticate, async (req, res) => {
       });
     }
     
+    // Check Learner Skills API status
+    let learnerSkillsStatus = { configured: false, connected: false, message: 'Not checked' };
+    try {
+      learnerSkillsStatus = await learnerSkillsApi.checkApiStatus();
+    } catch (error) {
+      learnerSkillsStatus = {
+        configured: false,
+        connected: false,
+        message: `Error checking status: ${error.message}`
+      };
+    }
+    
     res.json({
       success: true,
       message: 'CV parsing service is ready',
@@ -400,8 +546,10 @@ router.get('/test-connection', authenticate, async (req, res) => {
       services: {
         textExtractor: 'Available',
         cvParser: 'Available',
-        skillMapper: 'Available'
-      }
+        skillMapper: 'Available',
+        learnerSkillsApi: learnerSkillsStatus.connected ? 'Available' : 'Unavailable'
+      },
+      learnerSkillsApi: learnerSkillsStatus
     });
   } catch (error) {
     console.error('CV parsing service test error:', error);

@@ -28,8 +28,6 @@ export default function Domains() {
   const [editingDomain, setEditingDomain] = useState(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [domainToDelete, setDomainToDelete] = useState(null);
-  const [csvSkillsText, setCsvSkillsText] = useState('');
-  const [csvImportLoading, setCsvImportLoading] = useState(false);
   const [showBulkUploadModal, setShowBulkUploadModal] = useState(false);
   const [uploadFile, setUploadFile] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(null);
@@ -79,7 +77,6 @@ export default function Domains() {
       skills: [],
       department_ids: [],
     });
-    setCsvSkillsText('');
     setShowModal(true);
   };
 
@@ -104,123 +101,7 @@ export default function Domains() {
         ? domain.departments.map((dept) => dept.id)
         : [],
     });
-    setCsvSkillsText('');
     setShowModal(true);
-  };
-
-  // Parse CSV text (supports header with name_ar/name_en in any order)
-  const parseCsvSkills = (text) => {
-    const lines = text
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-
-    const skills = [];
-
-    if (lines.length === 0) {
-      return skills;
-    }
-
-    // Detect header row to allow any column ordering
-    let startIndex = 0;
-    let nameArIndex = 0;
-    let nameEnIndex = 1;
-
-    const headerParts = lines[0].split(',').map((part) => part.trim().toLowerCase());
-    const hasHeader =
-      headerParts.includes('name_ar') || headerParts.includes('name_en');
-
-    if (hasHeader) {
-      const headerNameArIndex = headerParts.indexOf('name_ar');
-      const headerNameEnIndex = headerParts.indexOf('name_en');
-
-      nameArIndex = headerNameArIndex !== -1 ? headerNameArIndex : 0;
-      nameEnIndex = headerNameEnIndex !== -1 ? headerNameEnIndex : 1;
-
-      startIndex = 1; // skip header line
-    }
-
-    for (let i = startIndex; i < lines.length; i++) {
-      const line = lines[i];
-      const parts = line.split(',');
-      if (parts.length < 2) continue;
-
-      const name_ar = parts[nameArIndex]?.trim();
-      const name_en = parts[nameEnIndex]?.trim();
-
-      if (!name_ar || !name_en) continue;
-
-      skills.push({ name_ar, name_en });
-    }
-
-    return skills;
-  };
-
-  const handleCsvFileUpload = (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    if (!file.name.toLowerCase().endsWith('.csv')) {
-      toast.error('الرجاء اختيار ملف CSV صالح');
-      event.target.value = '';
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result;
-      if (typeof text === 'string') {
-        setCsvSkillsText(text);
-        toast.success(
-          'تم تحميل ملف CSV بنجاح، تحقق من البيانات ثم اضغط "استيراد من CSV"'
-        );
-      }
-    };
-    reader.onerror = () => {
-      toast.error('حدث خطأ أثناء قراءة ملف CSV');
-    };
-
-    reader.readAsText(file, 'utf-8');
-  };
-
-  const handleImportSkillsCsv = async () => {
-    if (!csvSkillsText.trim()) {
-      toast.error('الرجاء لصق بيانات CSV أولاً');
-      return;
-    }
-
-    const skills = parseCsvSkills(csvSkillsText);
-
-    if (!skills.length) {
-      toast.error('لم يتم العثور على مهارات صالحة في CSV');
-      return;
-    }
-
-    // If creating a new domain: just merge into form.skills (سيتم إنشاؤها مع المجال)
-    if (!editingDomain) {
-      setForm((prev) => ({
-        ...prev,
-        skills: [...(prev.skills || []), ...skills],
-      }));
-      toast.success(`تم إضافة ${skills.length} مهارة إلى القائمة`);
-      return;
-    }
-
-    // If editing an existing domain: call backend bulk endpoint to create new skills
-    try {
-      setCsvImportLoading(true);
-      await api.post('/skills/bulk', {
-        domain_id: editingDomain.id,
-        skills,
-      });
-      toast.success(`تم إضافة ${skills.length} مهارة بنجاح`);
-      setCsvSkillsText('');
-      fetchDomains();
-    } catch (error) {
-      toast.error(error.response?.data?.error || 'فشل في استيراد المهارات من CSV');
-    } finally {
-      setCsvImportLoading(false);
-    }
   };
 
   const handleSubmit = async (e) => {
@@ -237,17 +118,22 @@ export default function Domains() {
   }
     
     try {
+      // Filter out empty skills before sending
+      const validSkills = (form.skills || []).filter(s => s.name_ar && s.name_en);
+      const dataToSend = { ...form, skills: validSkills };
+      
       if (editingDomain) {
-        await api.put(`/domains/${editingDomain.id}`, form);
-        toast.success('تم تحديث المجال بنجاح');
+        await api.put(`/domains/${editingDomain.id}`, dataToSend);
+        toast.success(`تم تحديث المجال بنجاح (${validSkills.length} مهارة)`);
       } else {
-        await api.post('/domains', form);
-        toast.success('تم إنشاء المجال بنجاح');
+        await api.post('/domains', dataToSend);
+        toast.success(`تم إنشاء المجال بنجاح (${validSkills.length} مهارة)`);
       }
       setShowModal(false);
       fetchDomains();
     } catch (error) {
-      toast.error('فشل في حفظ المجال');
+      console.error('Save domain error:', error);
+      toast.error(error.response?.data?.error || 'فشل في حفظ المجال');
     }
   };
 
@@ -264,7 +150,11 @@ export default function Domains() {
       toast.success('تم حذف المجال بنجاح');
       fetchDomains();
     } catch (error) {
-      toast.error(error.response?.data?.error || 'فشل في حذف المجال');
+      if (error.response?.data?.code === 'HAS_ASSOCIATED_TESTS') {
+        toast.error('لايمكنك حذف مجال مرتبط باختبار، قم بحذف الاختبار أولا.');
+      } else {
+        toast.error(error.response?.data?.error || 'فشل في حذف المجال');
+      }
     } finally {
       setShowDeleteModal(false);
       setDomainToDelete(null);
@@ -454,9 +344,9 @@ export default function Domains() {
                 <div className="flex items-center gap-4 text-sm text-slate-500">
                   <span className="flex items-center gap-1">
                     <TagIcon className="w-4 h-4" />
-                    {domain.skills_count || 0} مهارة
+                    {parseInt(domain.skills_count) || 0} مهارة
                   </span>
-                  <span>{domain.tests_count || 0} تقييم</span>
+                  <span>{parseInt(domain.tests_count) || 0} تقييم</span>
                 </div>
 
                 {Array.isArray(domain.skills) && domain.skills.length > 0 && (
@@ -598,33 +488,6 @@ export default function Domains() {
                   >
                     إضافة مهارة
                   </button>
-
-                  <div className="flex-1 min-w-full mt-3">
-                    <label className="text-xs font-medium text-slate-600 mb-1 block">
-                      استيراد مهارات من CSV (الحقول: name_ar, name_en)
-                    </label>
-                    <input
-                      type="file"
-                      accept=".csv,text/csv"
-                      className="mb-2 block w-full text-xs text-slate-600"
-                      onChange={handleCsvFileUpload}
-                    />
-                    <textarea
-                      className="input resize-none text-xs font-mono"
-                      rows={4}
-                      placeholder={`مثال:\nname_ar,name_en\nإدارة المشاريع,Project Management\nمهارات التواصل,Communication Skills`}
-                      value={csvSkillsText}
-                      onChange={(e) => setCsvSkillsText(e.target.value)}
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-secondary mt-2"
-                      onClick={handleImportSkillsCsv}
-                      disabled={csvImportLoading}
-                    >
-                      {csvImportLoading ? 'جاري الاستيراد...' : 'استيراد من CSV'}
-                    </button>
-                  </div>
                 </div>
               </div>
 
@@ -871,15 +734,19 @@ export default function Domains() {
                               <div className="text-xs">❌ فشل</div>
                             </div>
                           </div>
-                          {(uploadProgress.details.inserted > 0 || uploadProgress.details.updated > 0) && (
-                            <div className="grid grid-cols-2 gap-3 text-sm mb-3">
+                          {(uploadProgress.details.inserted > 0 || uploadProgress.details.updated > 0 || uploadProgress.details.skillsAdded > 0) && (
+                            <div className="grid grid-cols-3 gap-3 text-sm mb-3">
                               <div className="bg-blue-100 text-blue-700 px-3 py-2 rounded">
                                 <div className="font-bold text-xl">{uploadProgress.details.inserted || 0}</div>
-                                <div className="text-xs">➕ جديد</div>
+                                <div className="text-xs">➕ مجال جديد</div>
                               </div>
                               <div className="bg-amber-100 text-amber-700 px-3 py-2 rounded">
                                 <div className="font-bold text-xl">{uploadProgress.details.updated || 0}</div>
                                 <div className="text-xs">🔄 محدّث</div>
+                              </div>
+                              <div className="bg-purple-100 text-purple-700 px-3 py-2 rounded">
+                                <div className="font-bold text-xl">{uploadProgress.details.skillsAdded || 0}</div>
+                                <div className="text-xs">🎯 مهارة</div>
                               </div>
                             </div>
                           )}

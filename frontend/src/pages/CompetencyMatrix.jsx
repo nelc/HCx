@@ -57,13 +57,25 @@ export default function CompetencyMatrix() {
       <div className="card p-12 text-center">
         <Square3Stack3DIcon className="w-16 h-16 text-slate-300 mx-auto mb-4" />
         <h3 className="text-xl font-semibold text-slate-800 mb-2">لا توجد مجالات مهارية</h3>
-        <p className="text-slate-500 mb-4">لا توجد مجالات أو مهارات محددة من قبل الإدارة</p>
+        <p className="text-slate-500 mb-4">
+          {user?.role === 'employee' 
+            ? 'لا توجد مجالات تدريبية مرتبطة بقسمك حالياً. يرجى التواصل مع مسؤول التدريب.'
+            : 'لا توجد مجالات أو مهارات محددة من قبل الإدارة'}
+        </p>
       </div>
     );
   }
 
   const { domains, summary } = matrix;
   const currentDomain = domains.find(d => d.domain_id === selectedDomain);
+
+  // Derive level from score for consistency
+  const getLevelFromScore = (score) => {
+    if (score === null || score === undefined) return null;
+    if (score >= 70) return 'high';
+    if (score >= 40) return 'medium';
+    return 'low';
+  };
 
   const getLevelLabel = (level) => {
     switch (level) {
@@ -74,7 +86,7 @@ export default function CompetencyMatrix() {
       case 'high':
         return 'متقدم';
       default:
-        return '-';
+        return 'لم يتم التقييم';
     }
   };
 
@@ -100,7 +112,7 @@ export default function CompetencyMatrix() {
       case 'high':
         return 'text-success-700';
       default:
-        return 'text-slate-700';
+        return 'text-slate-500';
     }
   };
 
@@ -318,11 +330,16 @@ export default function CompetencyMatrix() {
                         </div>
                       </td>
 
-                      {/* Current Level */}
+                      {/* Current Level - derived from score for accuracy */}
                       <td className="py-4 px-4 text-center">
-                        <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${getLevelBgColor(skill.current_level)} ${getLevelTextColor(skill.current_level)}`}>
-                          {getLevelLabel(skill.current_level)}
-                        </span>
+                        {(() => {
+                          const derivedLevel = getLevelFromScore(skill.score);
+                          return (
+                            <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${getLevelBgColor(derivedLevel)} ${getLevelTextColor(derivedLevel)}`}>
+                              {getLevelLabel(derivedLevel)}
+                            </span>
+                          );
+                        })()}
                       </td>
 
                       {/* Target Level */}
@@ -368,9 +385,15 @@ export default function CompetencyMatrix() {
                         </div>
                       </td>
 
-                      {/* Status/Gap */}
+                      {/* Status/Gap - calculated from derived level and target */}
                       <td className="py-4 px-4 text-center">
-                        {getGapIndicator(skill.gap)}
+                        {(() => {
+                          const derivedLevel = getLevelFromScore(skill.score);
+                          if (!derivedLevel || !skill.target_level) return null;
+                          const levels = ['low', 'medium', 'high'];
+                          const gap = levels.indexOf(skill.target_level) - levels.indexOf(derivedLevel);
+                          return getGapIndicator(gap);
+                        })()}
                       </td>
                     </motion.tr>
                   ))}
@@ -400,70 +423,6 @@ export default function CompetencyMatrix() {
         </motion.div>
       )}
 
-      {/* Insights */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.3 }}
-        className="grid grid-cols-1 md:grid-cols-2 gap-4"
-      >
-        {/* Skills Needing Attention */}
-        <div className="card p-6">
-          <div className="flex items-center gap-2 mb-4">
-            <ExclamationCircleIcon className="w-5 h-5 text-warning-600" />
-            <h3 className="text-lg font-semibold text-primary-700">مهارات تحتاج انتباه</h3>
-          </div>
-          <div className="space-y-2">
-            {domains.flatMap(d => d.skills)
-              .filter(s => s.score !== null && (s.gap > 0 || s.score < 70))
-              .sort((a, b) => {
-                // Sort by score ascending (worst first), then by gap descending
-                if (a.score !== b.score) {
-                  return a.score - b.score;
-                }
-                return b.gap - a.gap;
-              })
-              .slice(0, 5)
-              .map((skill, index) => (
-                <div key={index} className="p-3 bg-warning-50 rounded-lg">
-                  <p className="text-sm font-medium text-warning-800">{skill.name_ar}</p>
-                  <p className="text-xs text-warning-600 mt-1">
-                    {skill.gap > 0 ? `فجوة ${skill.gap} مستوى • ` : ''}
-                    {skill.score}% • {skill.score < 40 ? 'يحتاج تحسين كبير' : skill.score < 70 ? 'يحتاج تحسين' : 'أداء مقبول'}
-                  </p>
-                </div>
-              ))}
-            {domains.flatMap(d => d.skills).filter(s => s.score !== null && (s.gap > 0 || s.score < 70)).length === 0 && (
-              <p className="text-sm text-slate-500 text-center py-4">جميع المهارات عند مستوى جيد! 🎉</p>
-            )}
-          </div>
-        </div>
-
-        {/* Top Competencies */}
-        <div className="card p-6">
-          <div className="flex items-center gap-2 mb-4">
-            <CheckCircleIcon className="w-5 h-5 text-success-600" />
-            <h3 className="text-lg font-semibold text-primary-700">أعلى الكفاءات</h3>
-          </div>
-          <div className="space-y-2">
-            {domains.flatMap(d => d.skills)
-              .filter(s => s.score !== null && s.score !== undefined)
-              .sort((a, b) => b.score - a.score)
-              .slice(0, 5)
-              .map((skill, index) => (
-                <div key={index} className="p-3 bg-success-50 rounded-lg">
-                  <p className="text-sm font-medium text-success-800">{skill.name_ar}</p>
-                  <p className="text-xs text-success-600 mt-1">
-                    {skill.current_level === 'high' ? 'متقدم' : skill.current_level === 'medium' ? 'متوسط' : 'مبتدئ'} • {skill.score}%
-                  </p>
-                </div>
-              ))}
-            {domains.flatMap(d => d.skills).filter(s => s.score !== null && s.score !== undefined).length === 0 && (
-              <p className="text-sm text-slate-500 text-center py-4">لم يتم تقييم أي مهارة بعد</p>
-            )}
-          </div>
-        </div>
-      </motion.div>
     </div>
   );
 }

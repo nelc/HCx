@@ -2,6 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const db = require('../db');
 const { authenticate, isAdmin, isTrainingOfficer } = require('../middleware/auth');
+const domainGenerator = require('../services/domainGenerator');
 
 const router = express.Router();
 
@@ -75,6 +76,78 @@ router.get('/', authenticate, async (req, res) => {
   }
 });
 
+// Get department info for employees (their own department)
+// NOTE: This route MUST be before /:id to avoid "my-department" being treated as an ID
+router.get('/my-department/info', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Get user's department_id
+    const userResult = await db.query('SELECT department_id FROM users WHERE id = $1', [userId]);
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const departmentId = userResult.rows[0].department_id;
+    
+    if (!departmentId) {
+      return res.status(404).json({ error: 'User is not assigned to any department' });
+    }
+    
+    // Get department with full hierarchy info
+    const result = await db.query(`
+      SELECT d.id, d.name_ar, d.name_en, d.type, d.objective_ar, d.objective_en, d.responsibilities,
+             p.name_ar as parent_name_ar, p.name_en as parent_name_en, p.type as parent_type,
+             gp.name_ar as grandparent_name_ar, gp.name_en as grandparent_name_en,
+             (SELECT COUNT(*) FROM users WHERE department_id = d.id) as employee_count
+      FROM departments d
+      LEFT JOIN departments p ON d.parent_id = p.id
+      LEFT JOIN departments gp ON p.parent_id = gp.id
+      WHERE d.id = $1
+    `, [departmentId]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+    
+    // Also get related domains for this department
+    const domainsResult = await db.query(`
+      SELECT td.id, td.name_ar, td.name_en, td.description_ar, td.description_en, td.color,
+             (
+               SELECT COALESCE(
+                 json_agg(
+                   json_build_object(
+                     'id', s.id,
+                     'name_ar', s.name_ar,
+                     'name_en', s.name_en
+                   )
+                   ORDER BY s.name_ar
+                 ),
+                 '[]'::json
+               )
+               FROM skills s
+               WHERE s.domain_id = td.id
+             ) as skills
+      FROM training_domains td
+      INNER JOIN domain_departments dd ON td.id = dd.domain_id
+      WHERE dd.department_id = $1 AND td.is_active = true
+      ORDER BY td.name_ar
+    `, [departmentId]);
+    
+    res.json({
+      ...result.rows[0],
+      domains: domainsResult.rows
+    });
+  } catch (error) {
+    console.error('Get my department info error:', error);
+    res.status(500).json({ 
+      error: 'Failed to get department info',
+      message: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // Get single department
 router.get('/:id', authenticate, async (req, res) => {
   try {
@@ -107,7 +180,7 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // Create department
-router.post('/', authenticate, isAdmin, [
+router.post('/', authenticate, isTrainingOfficer, [
   body('name_ar').notEmpty().withMessage('Arabic name is required').trim(),
   body('type').isIn(['sector', 'department', 'section']).withMessage('Invalid type')
 ], async (req, res) => {
@@ -349,7 +422,7 @@ router.post('/', authenticate, isAdmin, [
 });
 
 // Update department
-router.put('/:id', authenticate, isAdmin, [
+router.put('/:id', authenticate, isTrainingOfficer, [
   body('name_ar').optional().trim().notEmpty().withMessage('Arabic name cannot be empty')
 ], async (req, res) => {
   try {
@@ -363,7 +436,7 @@ router.put('/:id', authenticate, isAdmin, [
       });
     }
 
-    let { name_ar, type, parent_id } = req.body;
+    let { name_ar, type, parent_id, objective_ar, objective_en, responsibilities } = req.body;
     
     // Get current department
     const current = await db.query('SELECT * FROM departments WHERE id = $1', [req.params.id]);
@@ -389,6 +462,19 @@ router.put('/:id', authenticate, isAdmin, [
       }
     } else {
       name_ar = current.rows[0].name_ar;
+    }
+    
+    // Handle objective fields - use existing values if not provided
+    const finalObjectiveAr = objective_ar !== undefined ? objective_ar : current.rows[0].objective_ar;
+    const finalObjectiveEn = objective_en !== undefined ? objective_en : current.rows[0].objective_en;
+    
+    // Handle responsibilities - validate it's an array if provided
+    let finalResponsibilities = current.rows[0].responsibilities || [];
+    if (responsibilities !== undefined) {
+      if (!Array.isArray(responsibilities)) {
+        return res.status(400).json({ error: 'Responsibilities must be an array' });
+      }
+      finalResponsibilities = responsibilities;
     }
     
     // Validate hierarchy rules
@@ -445,10 +531,13 @@ router.put('/:id', authenticate, isAdmin, [
       UPDATE departments
       SET name_ar = $1,
           type = $2,
-          parent_id = $3
-      WHERE id = $4
+          parent_id = $3,
+          objective_ar = $4,
+          objective_en = $5,
+          responsibilities = $6
+      WHERE id = $7
       RETURNING *
-    `, [name_ar, currentType, currentParentId, req.params.id]);
+    `, [name_ar, currentType, currentParentId, finalObjectiveAr, finalObjectiveEn, JSON.stringify(finalResponsibilities), req.params.id]);
     
     res.json(result.rows[0]);
   } catch (error) {
@@ -472,7 +561,7 @@ router.put('/:id', authenticate, isAdmin, [
 });
 
 // Delete department
-router.delete('/:id', authenticate, isAdmin, async (req, res) => {
+router.delete('/:id', authenticate, isTrainingOfficer, async (req, res) => {
   try {
     // Check if department has users
     const userCheck = await db.query('SELECT id FROM users WHERE department_id = $1 LIMIT 1', [req.params.id]);
@@ -496,6 +585,183 @@ router.delete('/:id', authenticate, isAdmin, async (req, res) => {
   } catch (error) {
     console.error('Delete department error:', error);
     res.status(500).json({ error: 'Failed to delete' });
+  }
+});
+
+// Generate domains and skills for a department using AI
+router.post('/:id/generate-domains', authenticate, isTrainingOfficer, async (req, res) => {
+  try {
+    const departmentId = req.params.id;
+    
+    // Get department with objective and responsibilities
+    const deptResult = await db.query(`
+      SELECT id, name_ar, name_en, type, objective_ar, objective_en, responsibilities
+      FROM departments
+      WHERE id = $1
+    `, [departmentId]);
+    
+    if (deptResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+    
+    const department = deptResult.rows[0];
+    
+    // Check if department has objective or responsibilities
+    if (!department.objective_ar && !department.objective_en && 
+        (!department.responsibilities || department.responsibilities.length === 0)) {
+      return res.status(400).json({ 
+        error: 'Department must have objective or responsibilities defined before generating domains',
+        error_ar: 'يجب تحديد الهدف أو المسؤوليات للإدارة قبل توليد المجالات'
+      });
+    }
+    
+    // Generate domains using AI
+    console.log(`🚀 Generating domains for department: ${department.name_ar}`);
+    const result = await domainGenerator.generateDomainsForDepartment(department);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Generate domains error:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate domains',
+      message: error.message
+    });
+  }
+});
+
+// Save generated domains for a department
+router.post('/:id/save-domains', authenticate, isTrainingOfficer, async (req, res) => {
+  try {
+    const departmentId = req.params.id;
+    const { domains } = req.body;
+    
+    // Validate department exists
+    const deptResult = await db.query('SELECT id, name_ar FROM departments WHERE id = $1', [departmentId]);
+    if (deptResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Department not found' });
+    }
+    
+    // Validate domains structure
+    const validation = domainGenerator.validateDomains(domains);
+    if (!validation.valid) {
+      return res.status(400).json({ 
+        error: 'Invalid domains data',
+        errors: validation.errors
+      });
+    }
+    
+    const savedDomains = [];
+    const errors = [];
+    
+    await db.query('BEGIN');
+    
+    try {
+      for (const domainData of domains) {
+        // Create or update domain
+        let domainId;
+        
+        // Check if domain with same name already exists
+        const existingDomain = await db.query(`
+          SELECT id FROM training_domains 
+          WHERE (name_ar = $1 OR name_en = $2) AND is_active = true
+        `, [domainData.name_ar, domainData.name_en]);
+        
+        if (existingDomain.rows.length > 0) {
+          // Update existing domain
+          domainId = existingDomain.rows[0].id;
+          await db.query(`
+            UPDATE training_domains
+            SET description_ar = COALESCE($1, description_ar),
+                description_en = COALESCE($2, description_en),
+                color = COALESCE($3, color)
+            WHERE id = $4
+          `, [domainData.description_ar, domainData.description_en, domainData.color, domainId]);
+        } else {
+          // Create new domain
+          const newDomain = await db.query(`
+            INSERT INTO training_domains (name_ar, name_en, description_ar, description_en, color, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id
+          `, [
+            domainData.name_ar,
+            domainData.name_en,
+            domainData.description_ar || '',
+            domainData.description_en || '',
+            domainData.color || '#502390',
+            req.user.id
+          ]);
+          domainId = newDomain.rows[0].id;
+        }
+        
+        // Link domain to department
+        await db.query(`
+          INSERT INTO domain_departments (domain_id, department_id)
+          VALUES ($1, $2)
+          ON CONFLICT (domain_id, department_id) DO NOTHING
+        `, [domainId, departmentId]);
+        
+        // Add skills to domain
+        const savedSkills = [];
+        for (const skillData of (domainData.skills || [])) {
+          // Check if skill already exists in this domain
+          const existingSkill = await db.query(`
+            SELECT id FROM skills
+            WHERE domain_id = $1 AND (name_ar = $2 OR name_en = $3)
+          `, [domainId, skillData.name_ar, skillData.name_en]);
+          
+          if (existingSkill.rows.length === 0) {
+            const newSkill = await db.query(`
+              INSERT INTO skills (domain_id, name_ar, name_en, description_ar, description_en, weight)
+              VALUES ($1, $2, $3, $4, $5, 1.0)
+              RETURNING id, name_ar, name_en
+            `, [
+              domainId,
+              skillData.name_ar,
+              skillData.name_en,
+              skillData.description_ar || '',
+              skillData.description_en || ''
+            ]);
+            savedSkills.push(newSkill.rows[0]);
+          } else {
+            // Skill already exists, just include it
+            savedSkills.push({
+              id: existingSkill.rows[0].id,
+              name_ar: skillData.name_ar,
+              name_en: skillData.name_en,
+              existing: true
+            });
+          }
+        }
+        
+        savedDomains.push({
+          id: domainId,
+          name_ar: domainData.name_ar,
+          name_en: domainData.name_en,
+          skills: savedSkills
+        });
+      }
+      
+      await db.query('COMMIT');
+      
+      console.log(`✅ Saved ${savedDomains.length} domains for department ${departmentId}`);
+      
+      res.json({
+        success: true,
+        message: 'Domains saved successfully',
+        message_ar: 'تم حفظ المجالات بنجاح',
+        domains: savedDomains,
+        department_id: departmentId
+      });
+    } catch (dbError) {
+      await db.query('ROLLBACK');
+      throw dbError;
+    }
+  } catch (error) {
+    console.error('Save domains error:', error);
+    res.status(500).json({ 
+      error: 'Failed to save domains',
+      message: error.message
+    });
   }
 });
 

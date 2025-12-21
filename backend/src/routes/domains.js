@@ -112,7 +112,7 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // Create training domain (with optional initial skills and departments)
-router.post('/', authenticate, isAdmin, [
+router.post('/', authenticate, isTrainingOfficer, [
   body('name_ar').notEmpty(),
   body('name_en').notEmpty(),
   body('skills').optional().isArray(),
@@ -125,6 +125,8 @@ router.post('/', authenticate, isAdmin, [
     }
     
     const { name_ar, name_en, description_ar, description_en, icon, color, skills = [], department_ids = [] } = req.body;
+    
+    console.log('📥 Creating domain with:', { name_ar, name_en, skillsCount: skills?.length, skills });
 
     // Use a transaction so domain + skills + departments are created together
     await db.query('BEGIN');
@@ -139,10 +141,15 @@ router.post('/', authenticate, isAdmin, [
     const createdSkills = [];
 
     if (Array.isArray(skills) && skills.length > 0) {
+      console.log(`📋 Processing ${skills.length} skills for domain ${domain.id}`);
       for (const skill of skills) {
         // Basic validation per skill object
-        if (!skill || !skill.name_ar || !skill.name_en) continue;
+        if (!skill || !skill.name_ar || !skill.name_en) {
+          console.log('⚠️ Skipping invalid skill:', skill);
+          continue;
+        }
 
+        console.log(`✅ Inserting skill: ${skill.name_ar} / ${skill.name_en}`);
         const skillResult = await db.query(`
           INSERT INTO skills (domain_id, name_ar, name_en, description_ar, description_en, weight)
           VALUES ($1, $2, $3, $4, $5, $6)
@@ -157,7 +164,10 @@ router.post('/', authenticate, isAdmin, [
         ]);
 
         createdSkills.push(skillResult.rows[0]);
+        console.log(`✅ Skill created with ID: ${skillResult.rows[0].id}`);
       }
+    } else {
+      console.log('⚠️ No skills array provided or empty');
     }
 
     // Create department associations
@@ -194,9 +204,10 @@ router.post('/', authenticate, isAdmin, [
 });
 
 // Update training domain
-router.put('/:id', authenticate, isAdmin, async (req, res) => {
+router.put('/:id', authenticate, isTrainingOfficer, async (req, res) => {
   try {
-    const { name_ar, name_en, description_ar, description_en, icon, color, is_active, department_ids } = req.body;
+    const { name_ar, name_en, description_ar, description_en, icon, color, is_active, department_ids, skills } = req.body;
+    const domainId = req.params.id;
     
     await db.query('BEGIN');
     
@@ -211,7 +222,7 @@ router.put('/:id', authenticate, isAdmin, async (req, res) => {
           is_active = COALESCE($7, is_active)
       WHERE id = $8
       RETURNING *
-    `, [name_ar, name_en, description_ar, description_en, icon, color, is_active, req.params.id]);
+    `, [name_ar, name_en, description_ar, description_en, icon, color, is_active, domainId]);
     
     if (result.rows.length === 0) {
       await db.query('ROLLBACK');
@@ -221,7 +232,7 @@ router.put('/:id', authenticate, isAdmin, async (req, res) => {
     // Update department associations if provided
     if (Array.isArray(department_ids)) {
       // Delete existing associations
-      await db.query(`DELETE FROM domain_departments WHERE domain_id = $1`, [req.params.id]);
+      await db.query(`DELETE FROM domain_departments WHERE domain_id = $1`, [domainId]);
       
       // Create new associations
       if (department_ids.length > 0) {
@@ -232,14 +243,83 @@ router.put('/:id', authenticate, isAdmin, async (req, res) => {
             INSERT INTO domain_departments (domain_id, department_id)
             VALUES ($1, $2)
             ON CONFLICT (domain_id, department_id) DO NOTHING
-          `, [req.params.id, dept_id]);
+          `, [domainId, dept_id]);
+        }
+      }
+    }
+    
+    // Sync skills if provided
+    if (Array.isArray(skills)) {
+      console.log(`📋 Syncing ${skills.length} skills for domain ${domainId}`);
+      
+      // Get existing skill IDs for this domain
+      const existingSkillsResult = await db.query(
+        'SELECT id FROM skills WHERE domain_id = $1',
+        [domainId]
+      );
+      const existingSkillIds = new Set(existingSkillsResult.rows.map(s => s.id));
+      
+      // Track which skill IDs we want to keep
+      const skillIdsToKeep = new Set();
+      
+      for (const skill of skills) {
+        // Skip invalid skills
+        if (!skill.name_ar || !skill.name_en) {
+          console.log('⚠️ Skipping invalid skill:', skill);
+          continue;
+        }
+        
+        if (skill.id && existingSkillIds.has(skill.id)) {
+          // Update existing skill
+          await db.query(`
+            UPDATE skills
+            SET name_ar = $1, name_en = $2, description_ar = $3, description_en = $4
+            WHERE id = $5
+          `, [skill.name_ar, skill.name_en, skill.description_ar || null, skill.description_en || null, skill.id]);
+          skillIdsToKeep.add(skill.id);
+          console.log(`✅ Updated skill: ${skill.name_ar}`);
+        } else {
+          // Create new skill
+          const newSkillResult = await db.query(`
+            INSERT INTO skills (domain_id, name_ar, name_en, description_ar, description_en, weight)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id
+          `, [domainId, skill.name_ar, skill.name_en, skill.description_ar || null, skill.description_en || null, skill.weight || 1.0]);
+          skillIdsToKeep.add(newSkillResult.rows[0].id);
+          console.log(`✅ Created skill: ${skill.name_ar}`);
+        }
+      }
+      
+      // Delete skills that were removed (exist in DB but not in the request)
+      for (const existingId of existingSkillIds) {
+        if (!skillIdsToKeep.has(existingId)) {
+          await db.query('DELETE FROM skills WHERE id = $1', [existingId]);
+          console.log(`🗑️ Deleted skill with ID: ${existingId}`);
         }
       }
     }
     
     await db.query('COMMIT');
     
-    res.json(result.rows[0]);
+    // Fetch updated domain with skills to return
+    const updatedDomain = await db.query(`
+      SELECT td.*,
+             (SELECT COUNT(*) FROM skills WHERE domain_id = td.id) as skills_count,
+             (
+               SELECT COALESCE(
+                 json_agg(
+                   json_build_object('id', s.id, 'name_ar', s.name_ar, 'name_en', s.name_en)
+                   ORDER BY s.name_ar
+                 ),
+                 '[]'::json
+               )
+               FROM skills s WHERE s.domain_id = td.id
+             ) as skills
+      FROM training_domains td
+      WHERE td.id = $1
+    `, [domainId]);
+    
+    res.json(updatedDomain.rows[0]);
   } catch (error) {
     try {
       await db.query('ROLLBACK');
@@ -253,12 +333,15 @@ router.put('/:id', authenticate, isAdmin, async (req, res) => {
 });
 
 // Delete training domain
-router.delete('/:id', authenticate, isAdmin, async (req, res) => {
+router.delete('/:id', authenticate, isTrainingOfficer, async (req, res) => {
   try {
     // Check if domain has tests
     const testCheck = await db.query('SELECT id FROM tests WHERE domain_id = $1 LIMIT 1', [req.params.id]);
     if (testCheck.rows.length > 0) {
-      return res.status(400).json({ error: 'Cannot delete domain with associated tests' });
+      return res.status(400).json({ 
+        error: 'Cannot delete domain with associated tests',
+        code: 'HAS_ASSOCIATED_TESTS'
+      });
     }
     
     const result = await db.query('DELETE FROM training_domains WHERE id = $1 RETURNING id', [req.params.id]);
@@ -275,7 +358,7 @@ router.delete('/:id', authenticate, isAdmin, async (req, res) => {
 });
 
 // Bulk upload domains with skills from CSV
-router.post('/upload-csv', authenticate, isAdmin, upload.single('file'), async (req, res) => {
+router.post('/upload-csv', authenticate, isTrainingOfficer, upload.single('file'), async (req, res) => {
   console.log('📤 Starting domains CSV upload process...');
   try {
     if (!req.file) {
@@ -285,14 +368,34 @@ router.post('/upload-csv', authenticate, isAdmin, upload.single('file'), async (
 
     console.log(`📄 File received: ${req.file.originalname}, Size: ${req.file.size} bytes`);
 
-    // Parse CSV
-    const records = parse(req.file.buffer.toString(), {
-      columns: true,
+    // Remove BOM if present and parse CSV
+    let csvContent = req.file.buffer.toString('utf-8');
+    // Remove BOM (Byte Order Mark) if present
+    if (csvContent.charCodeAt(0) === 0xFEFF) {
+      csvContent = csvContent.slice(1);
+    }
+    
+    // Parse CSV with flexible options
+    const records = parse(csvContent, {
+      columns: (header) => {
+        // Normalize column names - trim and lowercase for matching
+        const normalizedHeaders = header.map(col => col.trim().toLowerCase());
+        console.log('📋 CSV Headers detected:', normalizedHeaders);
+        return header.map(col => col.trim());
+      },
       skip_empty_lines: true,
-      trim: true
+      trim: true,
+      relaxColumnCount: true,
+      skipRecordsWithError: true
     });
 
     console.log(`📊 Parsed ${records.length} records from CSV`);
+    
+    // Log first record to help debug column issues
+    if (records.length > 0) {
+      console.log('📝 First record keys:', Object.keys(records[0]));
+      console.log('📝 First record values:', records[0]);
+    }
 
     const results = {
       total: records.length,
@@ -300,31 +403,64 @@ router.post('/upload-csv', authenticate, isAdmin, upload.single('file'), async (
       inserted: 0,
       updated: 0,
       failed: 0,
+      skillsAdded: 0,
       errors: []
+    };
+
+    // Helper function to get value from record with flexible column name matching
+    const getRecordValue = (record, ...possibleKeys) => {
+      for (const key of possibleKeys) {
+        // Try exact match first
+        if (record[key] !== undefined) return record[key];
+        // Try lowercase match
+        const lowerKey = key.toLowerCase();
+        for (const recordKey of Object.keys(record)) {
+          if (recordKey.toLowerCase() === lowerKey) {
+            return record[recordKey];
+          }
+        }
+      }
+      return undefined;
     };
 
     // Group records by domain (since multiple rows can have same domain but different skills)
     const domainMap = new Map();
     
     for (const record of records) {
-      const domainKey = `${record.domain_ar}_${record.domain_en}`;
+      // Support flexible column names
+      const domain_ar = getRecordValue(record, 'domain_ar', 'Domain_ar', 'DOMAIN_AR', 'اسم المجال');
+      const domain_en = getRecordValue(record, 'domain_en', 'Domain_en', 'DOMAIN_EN');
+      const description = getRecordValue(record, 'description', 'Description', 'description_ar', 'وصف');
+      const color_code = getRecordValue(record, 'color_code', 'Color_code', 'color', 'Color');
+      const skill_ar = getRecordValue(record, 'skill_ar', 'Skill_ar', 'SKILL_AR', 'name_ar', 'اسم المهارة');
+      const skill_en = getRecordValue(record, 'skill_en', 'Skill_en', 'SKILL_EN', 'name_en');
+      
+      if (!domain_ar || !domain_en) {
+        console.log('⚠️ Skipping record - missing domain_ar or domain_en:', record);
+        continue;
+      }
+      
+      const domainKey = `${domain_ar}_${domain_en}`;
       
       if (!domainMap.has(domainKey)) {
         domainMap.set(domainKey, {
-          domain_ar: record.domain_ar,
-          domain_en: record.domain_en,
-          description: record.description || '',
-          color_code: record.color_code || '#502390',
+          domain_ar: domain_ar,
+          domain_en: domain_en,
+          description: description || '',
+          color_code: color_code || '#502390',
           skills: []
         });
       }
       
       // Add skill to this domain if provided
-      if (record.skill_ar && record.skill_en) {
+      if (skill_ar && skill_en) {
         domainMap.get(domainKey).skills.push({
-          name_ar: record.skill_ar,
-          name_en: record.skill_en
+          name_ar: skill_ar,
+          name_en: skill_en
         });
+        console.log(`   ↳ Skill found: ${skill_ar} / ${skill_en}`);
+      } else {
+        console.log(`⚠️ Skipping skill - missing skill_ar or skill_en in record:`, { skill_ar, skill_en });
       }
     }
 
@@ -401,6 +537,7 @@ router.post('/upload-csv', authenticate, isAdmin, upload.single('file'), async (
         
         console.log(`   ↳ Added ${skillsAdded} new skills to domain`);
         results.success++;
+        results.skillsAdded += skillsAdded;
 
       } catch (error) {
         await db.query('ROLLBACK').catch(() => {});
@@ -413,7 +550,7 @@ router.post('/upload-csv', authenticate, isAdmin, upload.single('file'), async (
       }
     }
 
-    console.log(`✅ CSV upload complete: ${results.success} successful, ${results.failed} failed`);
+    console.log(`✅ CSV upload complete: ${results.success} domains processed, ${results.skillsAdded} skills added, ${results.failed} failed`);
 
     res.json(results);
   } catch (error) {

@@ -59,7 +59,7 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // Create skill
-router.post('/', authenticate, isAdmin, [
+router.post('/', authenticate, isTrainingOfficer, [
   body('domain_id').isUUID(),
   body('name_ar').notEmpty(),
   body('name_en').notEmpty()
@@ -86,7 +86,7 @@ router.post('/', authenticate, isAdmin, [
 });
 
 // Create multiple skills (bulk)
-router.post('/bulk', authenticate, isAdmin, [
+router.post('/bulk', authenticate, isTrainingOfficer, [
   body('domain_id').isUUID(),
   body('skills').isArray({ min: 1 })
 ], async (req, res) => {
@@ -116,7 +116,7 @@ router.post('/bulk', authenticate, isAdmin, [
 });
 
 // Update skill
-router.put('/:id', authenticate, isAdmin, async (req, res) => {
+router.put('/:id', authenticate, isTrainingOfficer, async (req, res) => {
   try {
     const { name_ar, name_en, description_ar, description_en, weight } = req.body;
     
@@ -143,7 +143,7 @@ router.put('/:id', authenticate, isAdmin, async (req, res) => {
 });
 
 // Delete skill
-router.delete('/:id', authenticate, isAdmin, async (req, res) => {
+router.delete('/:id', authenticate, isTrainingOfficer, async (req, res) => {
   try {
     const result = await db.query('DELETE FROM skills WHERE id = $1 RETURNING id', [req.params.id]);
     

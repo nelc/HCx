@@ -18,6 +18,7 @@ import {
   FolderIcon,
   Square3Stack3DIcon,
   BookOpenIcon,
+  DocumentChartBarIcon,
 } from '@heroicons/react/24/outline';
 import useAuthStore from '../../store/authStore';
 import { getInitials, getRoleLabel } from '../../utils/helpers';
@@ -25,21 +26,24 @@ import api from '../../utils/api';
 
 const adminNavItems = [
   { name: 'لوحة التحكم', path: '/dashboard', icon: HomeIcon },
+  { name: 'الأقسام', path: '/departments', icon: BuildingOfficeIcon },
+  { name: 'مجالات التدريب', path: '/domains', icon: FolderIcon },
+  { name: 'الدورات التدريبية', path: '/courses', icon: AcademicCapIcon },
   { name: 'التقييمات', path: '/tests', icon: ClipboardDocumentListIcon },
   { name: 'النتائج والتحليلات', path: '/results-overview', icon: ChartBarIcon },
-  { name: 'الدورات التدريبية', path: '/courses', icon: AcademicCapIcon },
-  { name: 'مجالات التدريب', path: '/domains', icon: FolderIcon },
+  { name: 'التقارير', path: '/reports', icon: DocumentChartBarIcon },
   { name: 'المستخدمون', path: '/users', icon: UsersIcon },
-  { name: 'الأقسام', path: '/departments', icon: BuildingOfficeIcon },
   { name: 'الإعدادات', path: '/settings', icon: Cog6ToothIcon },
 ];
 
 const officerNavItems = [
   { name: 'لوحة التحكم', path: '/dashboard', icon: HomeIcon },
+  { name: 'الأقسام', path: '/departments', icon: BuildingOfficeIcon },
+  { name: 'مجالات التدريب', path: '/domains', icon: FolderIcon },
+  { name: 'الدورات التدريبية', path: '/courses', icon: AcademicCapIcon },
   { name: 'التقييمات', path: '/tests', icon: ClipboardDocumentListIcon },
   { name: 'النتائج والتحليلات', path: '/results-overview', icon: ChartBarIcon },
-  { name: 'الدورات التدريبية', path: '/courses', icon: AcademicCapIcon },
-  { name: 'التوصيات', path: '/recommendations', icon: LightBulbIcon },
+  { name: 'التقارير', path: '/reports', icon: DocumentChartBarIcon },
   { name: 'الإعدادات', path: '/settings', icon: Cog6ToothIcon },
 ];
 

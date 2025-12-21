@@ -2,6 +2,8 @@ const express = require('express');
 const db = require('../db');
 const { authenticate, isTrainingOfficer } = require('../middleware/auth');
 const OpenAI = require('openai');
+const { categorizeByTestResult, generateRecommendationReason, generateUserProfile } = require('../services/userCategorizer');
+const { generateEnhancedRecommendations, storeRecommendationsWithReasons } = require('../services/recommendationEngine');
 
 const router = express.Router();
 
@@ -179,6 +181,7 @@ async function analyzeAssignment(assignmentId) {
     
     for (const testSkill of testSkills.rows) {
       const percentage = overallPercentage; // Apply same percentage to all skills
+      // Aligned with PROFICIENCY_LEVELS: Advanced >= 70%, Intermediate 40-69%, Beginner 0-39%
       let level = 'low';
       if (percentage >= 70) level = 'high';
       else if (percentage >= 40) level = 'medium';
@@ -198,6 +201,20 @@ async function analyzeAssignment(assignmentId) {
           description_ar: `أداء ممتاز في ${testSkill.skill_name_ar}`,
           description_en: `Excellent performance in ${testSkill.skill_name_en}`
         });
+        // Also add to gaps for advanced training recommendations (if not 100%)
+        const gapPercentage = Math.round(100 - percentage);
+        if (gapPercentage > 0) {
+          gaps.push({
+            skill_id: testSkill.skill_id,
+            skill_name_ar: testSkill.skill_name_ar,
+            skill_name_en: testSkill.skill_name_en,
+            gap_score: gapPercentage,
+            gap_percentage: gapPercentage,
+            priority: 3, // Lower priority for advanced skills
+            description_ar: `يمكن التخصص أكثر في ${testSkill.skill_name_ar}`,
+            description_en: `Can specialize further in ${testSkill.skill_name_en}`
+          });
+        }
       } else if (level === 'low') {
         gaps.push({
           skill_id: testSkill.skill_id,
@@ -324,26 +341,95 @@ Format response as JSON with this structure:
       rawAiResponse ? JSON.stringify(rawAiResponse) : null
     ]);
     
-    // Generate training recommendations for gaps
-    for (const gap of gaps.filter(g => g.priority === 1)) {
-      await db.query(`
-        INSERT INTO training_recommendations (
-          analysis_id, user_id, skill_id,
-          course_title_ar, course_title_en,
-          course_description_ar, course_description_en,
-          priority, source
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ai_generated')
-      `, [
-        analysisResult.rows[0].id,
+    // Categorize user based on overall score
+    const userCategory = categorizeByTestResult(overallScore);
+    console.log(`👤 User Categorized as: ${userCategory.label_en} (Score: ${overallScore}%)`);
+    
+    // Prepare exam context for recommendation reasons
+    const examContext = {
+      test_id: assignmentData.test_id,
+      test_title_ar: assignmentData.title_ar,
+      test_title_en: assignmentData.title_en,
+      domain_name_ar: assignmentData.domain_name_ar,
+      domain_name_en: assignmentData.domain_name_en,
+      department: null // Will be fetched if needed
+    };
+    
+    // Generate enhanced training recommendations with exam context
+    console.log('🎯 Generating enhanced recommendations with exam context...');
+    
+    // Try to generate enhanced Neo4j recommendations
+    let enhancedRecsGenerated = false;
+    try {
+      // Prepare analysis result for recommendation engine
+      const analysisForRecs = {
+        user_id: assignmentData.user_id,
+        test_id: assignmentData.test_id,
+        overall_score: overallScore,
+        gaps: gaps,
+        strengths: strengths,
+        analyzed_at: new Date().toISOString()
+      };
+      
+      // Generate enhanced recommendations using Neo4j + AI enrichment
+      const enhancedRecs = await generateEnhancedRecommendations(
         assignmentData.user_id,
-        gap.skill_id,
-        `دورة تطوير ${gap.skill_name_ar}`,
-        `${gap.skill_name_en} Development Course`,
-        `برنامج تدريبي لتحسين مهارات ${gap.skill_name_ar}`,
-        `Training program to improve ${gap.skill_name_en} skills`,
-        gap.priority
-      ]);
+        analysisForRecs,
+        examContext,
+        5 // Top 5 recommendations
+      );
+      
+      if (enhancedRecs && enhancedRecs.length > 0) {
+        // Store enhanced recommendations with reasons
+        await storeRecommendationsWithReasons(
+          assignmentData.user_id,
+          analysisResult.rows[0].id,
+          enhancedRecs,
+          examContext
+        );
+        enhancedRecsGenerated = true;
+        console.log(`✅ Generated ${enhancedRecs.length} enhanced recommendations with exam context`);
+      }
+    } catch (enhancedError) {
+      console.log('⚠️ Enhanced recommendations not available, falling back to basic:', enhancedError.message);
+    }
+    
+    // Fallback: Generate basic recommendations for priority gaps if enhanced failed
+    if (!enhancedRecsGenerated) {
+      for (const gap of gaps.filter(g => g.priority === 1)) {
+        // Generate recommendation reason
+        const reason = generateRecommendationReason({
+          exam_name_ar: assignmentData.title_ar,
+          exam_name_en: assignmentData.title_en,
+          exam_id: assignmentData.test_id,
+          analyzed_at: new Date().toISOString(),
+          user_category: userCategory,
+          matching_skills: [gap.skill_name_ar],
+          skill_gap_score: gap.gap_score
+        });
+        
+        await db.query(`
+          INSERT INTO training_recommendations (
+            analysis_id, user_id, skill_id,
+            course_title_ar, course_title_en,
+            course_description_ar, course_description_en,
+            priority, source, recommendation_reason, source_exam_id, user_proficiency_category
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ai_generated', $9, $10, $11)
+        `, [
+          analysisResult.rows[0].id,
+          assignmentData.user_id,
+          gap.skill_id,
+          `دورة تطوير ${gap.skill_name_ar}`,
+          `${gap.skill_name_en} Development Course`,
+          `برنامج تدريبي لتحسين مهارات ${gap.skill_name_ar}`,
+          `Training program to improve ${gap.skill_name_en} skills`,
+          gap.priority,
+          JSON.stringify(reason),
+          assignmentData.test_id,
+          userCategory.key
+        ]);
+      }
     }
     
     // Update employee skill profiles
@@ -377,7 +463,10 @@ Format response as JSON with this structure:
       skill_results: skillResults,
       strengths,
       gaps,
-      open_text_analysis: openTextAnalysis
+      open_text_analysis: openTextAnalysis,
+      // NEW: User categorization based on test results
+      user_category: userCategory,
+      exam_context: examContext
     };
   } catch (error) {
     console.error('Analysis error:', error);
@@ -494,16 +583,19 @@ router.get('/:id', authenticate, async (req, res) => {
     // Calculate totals
     const totalWeightedScore = breakdown.reduce((sum, q) => sum + q.weighted_score, 0);
     const totalWeightedMaxScore = breakdown.reduce((sum, q) => sum + q.weighted_max_score, 0);
+    const calculatedOverallScore = totalWeightedMaxScore > 0 ? 
+      Math.round((totalWeightedScore / totalWeightedMaxScore) * 100) : 0;
     
     res.json({
       ...result.rows[0],
+      // Override with recalculated score for consistency
+      overall_score: calculatedOverallScore,
       recommendations: recommendations.rows,
       weighted_breakdown: breakdown,
       weighted_totals: {
         total_weighted_score: Math.round(totalWeightedScore * 10) / 10,
         total_weighted_max_score: Math.round(totalWeightedMaxScore * 10) / 10,
-        weighted_percentage: totalWeightedMaxScore > 0 ? 
-          Math.round((totalWeightedScore / totalWeightedMaxScore) * 100) : 0
+        weighted_percentage: calculatedOverallScore
       }
     });
   } catch (error) {
@@ -604,16 +696,19 @@ router.get('/assignment/:assignmentId', authenticate, async (req, res) => {
     // Calculate totals
     const totalWeightedScore = breakdown.reduce((sum, q) => sum + q.weighted_score, 0);
     const totalWeightedMaxScore = breakdown.reduce((sum, q) => sum + q.weighted_max_score, 0);
+    const calculatedOverallScore = totalWeightedMaxScore > 0 ? 
+      Math.round((totalWeightedScore / totalWeightedMaxScore) * 100) : 0;
     
     res.json({
       ...result.rows[0],
+      // Override with recalculated score for consistency
+      overall_score: calculatedOverallScore,
       recommendations: recommendations.rows,
       weighted_breakdown: breakdown,
       weighted_totals: {
         total_weighted_score: Math.round(totalWeightedScore * 10) / 10,
         total_weighted_max_score: Math.round(totalWeightedMaxScore * 10) / 10,
-        weighted_percentage: totalWeightedMaxScore > 0 ? 
-          Math.round((totalWeightedScore / totalWeightedMaxScore) * 100) : 0
+        weighted_percentage: calculatedOverallScore
       }
     });
   } catch (error) {
@@ -968,74 +1063,205 @@ router.get('/competency-matrix/:userId', authenticate, async (req, res) => {
 
     const userId = req.params.userId;
 
-    // Get ALL active domains and their skills
-    const allSkills = await db.query(`
-      SELECT 
-        td.id as domain_id,
-        td.name_ar as domain_name_ar,
-        td.name_en as domain_name_en,
-        td.color as domain_color,
+    // Get user's department to filter domains
+    const userResult = await db.query(
+      'SELECT department_id, role FROM users WHERE id = $1',
+      [userId]
+    );
+    
+    const userDepartmentId = userResult.rows[0]?.department_id;
+    const userRole = userResult.rows[0]?.role;
+    
+    console.log(`[CompetencyMatrix] User ${userId}, role: ${userRole}, department: ${userDepartmentId}`);
+
+    // STEP 1: Get ALL skills that have been assessed for this user (from test_skills of completed tests)
+    // This ensures we show skills even if domain_departments isn't set up
+    const assessedSkillsQuery = await db.query(`
+      SELECT DISTINCT
         s.id as skill_id,
         s.name_ar as skill_name_ar,
         s.name_en as skill_name_en,
-        s.weight as skill_weight
-      FROM training_domains td
-      LEFT JOIN skills s ON s.domain_id = td.id
-      WHERE td.is_active = true
+        s.weight as skill_weight,
+        s.domain_id,
+        td.id as domain_id,
+        td.name_ar as domain_name_ar,
+        td.name_en as domain_name_en,
+        td.color as domain_color
+      FROM test_skills ts
+      JOIN skills s ON ts.skill_id = s.id
+      JOIN training_domains td ON s.domain_id = td.id
+      WHERE ts.test_id IN (
+        SELECT DISTINCT ta.test_id 
+        FROM test_assignments ta 
+        WHERE ta.user_id = $1 AND ta.status = 'completed'
+      )
+      AND td.is_active = true
       ORDER BY td.name_ar, s.name_ar
-    `);
+    `, [userId]);
+    
+    console.log(`[CompetencyMatrix] Found ${assessedSkillsQuery.rows.length} skills from completed tests`);
 
-    // Get user's analysis results with skill scores
+    // STEP 2: Get skills from department-linked domains (if employee has a department)
+    let departmentSkillsQuery = { rows: [] };
+    if (userDepartmentId) {
+      departmentSkillsQuery = await db.query(`
+        SELECT 
+          s.id as skill_id,
+          s.name_ar as skill_name_ar,
+          s.name_en as skill_name_en,
+          s.weight as skill_weight,
+          s.domain_id,
+          td.id as domain_id,
+          td.name_ar as domain_name_ar,
+          td.name_en as domain_name_en,
+          td.color as domain_color
+        FROM training_domains td
+        INNER JOIN domain_departments dd ON dd.domain_id = td.id
+        LEFT JOIN skills s ON s.domain_id = td.id
+        WHERE td.is_active = true AND dd.department_id = $1
+        ORDER BY td.name_ar, s.name_ar
+      `, [userDepartmentId]);
+      
+      console.log(`[CompetencyMatrix] Found ${departmentSkillsQuery.rows.length} skills from department-linked domains`);
+    }
+
+    // STEP 3: Merge both sources - prioritize assessed skills but include all from department
+    const allSkillsMap = new Map();
+    const allDomainsMap = new Map();
+    
+    // Add assessed skills first (these have priority)
+    assessedSkillsQuery.rows.forEach(row => {
+      if (row.skill_id && !allSkillsMap.has(row.skill_id)) {
+        allSkillsMap.set(row.skill_id, row);
+      }
+      if (row.domain_id && !allDomainsMap.has(row.domain_id)) {
+        allDomainsMap.set(row.domain_id, {
+          domain_id: row.domain_id,
+          domain_name_ar: row.domain_name_ar,
+          domain_name_en: row.domain_name_en,
+          domain_color: row.domain_color || '#502390'
+        });
+      }
+    });
+    
+    // Add department skills that aren't already in the map
+    departmentSkillsQuery.rows.forEach(row => {
+      if (row.skill_id && !allSkillsMap.has(row.skill_id)) {
+        allSkillsMap.set(row.skill_id, row);
+      }
+      if (row.domain_id && !allDomainsMap.has(row.domain_id)) {
+        allDomainsMap.set(row.domain_id, {
+          domain_id: row.domain_id,
+          domain_name_ar: row.domain_name_ar,
+          domain_name_en: row.domain_name_en,
+          domain_color: row.domain_color || '#502390'
+        });
+      }
+    });
+    
+    console.log(`[CompetencyMatrix] Total unique skills: ${allSkillsMap.size}, domains: ${allDomainsMap.size}`);
+
+    // STEP 4: Get user's analysis results and RECALCULATE actual scores from responses
+    // This ensures consistency with the test results display
     const analyses = await db.query(`
       SELECT 
-        ar.skill_scores,
-        ar.analyzed_at
+        ar.id,
+        ar.assignment_id,
+        ar.test_id,
+        ar.analyzed_at,
+        ar.overall_score,
+        t.title_ar as test_title
       FROM analysis_results ar
+      JOIN tests t ON ar.test_id = t.id
       WHERE ar.user_id = $1
       ORDER BY ar.analyzed_at DESC
     `, [userId]);
 
-    // Calculate average scores for each skill across all tests
+    // Calculate ACTUAL scores from responses (same logic as test results display)
     const skillScoresMap = {};
     
     console.log(`[CompetencyMatrix] User ${userId}: Found ${analyses.rows.length} test results`);
     
-    analyses.rows.forEach((analysis, idx) => {
-      console.log(`[CompetencyMatrix] Test ${idx + 1}:`, {
-        analyzed_at: analysis.analyzed_at,
-        has_skill_scores: !!analysis.skill_scores,
-        skill_scores_type: typeof analysis.skill_scores
-      });
+    for (let idx = 0; idx < analyses.rows.length; idx++) {
+      const analysis = analyses.rows[idx];
       
-      if (analysis.skill_scores) {
-        // skill_scores is already a JS object (PostgreSQL JSONB is automatically parsed)
-        const skillScoresObj = typeof analysis.skill_scores === 'string' 
-          ? JSON.parse(analysis.skill_scores) 
-          : analysis.skill_scores;
-        
-        console.log(`[CompetencyMatrix] Test ${idx + 1} skill_scores:`, Object.keys(skillScoresObj).length, 'skills');
-        
-        Object.entries(skillScoresObj).forEach(([skillId, scoreData]) => {
-          if (!skillScoresMap[skillId]) {
-            skillScoresMap[skillId] = {
-              scores: [],
-              totalScore: 0,
-              count: 0
-            };
-          }
-          // scoreData is an object with { score, level, gap_percentage }
-          const score = typeof scoreData === 'object' ? (scoreData.score || 0) : 0;
-          console.log(`[CompetencyMatrix] Skill ${skillId}: score=${score}`);
-          skillScoresMap[skillId].scores.push(score);
-          skillScoresMap[skillId].totalScore += score;
-          skillScoresMap[skillId].count += 1;
-        });
-      } else {
-        console.log(`[CompetencyMatrix] Test ${idx + 1}: No skill_scores found!`);
+      // Get the test's target skills
+      const testSkillsResult = await db.query(`
+        SELECT s.id as skill_id
+        FROM test_skills ts
+        JOIN skills s ON ts.skill_id = s.id
+        WHERE ts.test_id = $1
+      `, [analysis.test_id]);
+      
+      if (testSkillsResult.rows.length === 0) {
+        console.log(`[CompetencyMatrix] Test ${idx + 1} (${analysis.test_title}): No skills linked`);
+        continue;
       }
-    });
+      
+      // Recalculate the ACTUAL grade from responses
+      const responsesData = await db.query(`
+        SELECT r.score, q.question_type, q.options, q.weight
+        FROM responses r
+        JOIN questions q ON r.question_id = q.id
+        WHERE r.assignment_id = $1
+      `, [analysis.assignment_id]);
+      
+      let totalScore = 0;
+      let totalMaxScore = 0;
+      
+      for (const response of responsesData.rows) {
+        let maxScore = 10;
+        
+        if (response.question_type === 'mcq' && response.options && Array.isArray(response.options) && response.options.length > 0) {
+          const optionScores = response.options.map(o => parseFloat(o.score) || 0);
+          maxScore = Math.max(...optionScores, 10);
+        } else if (response.question_type === 'likert_scale' || response.question_type === 'self_rating') {
+          maxScore = 10;
+        } else if (response.question_type === 'open_text') {
+          maxScore = 10;
+        }
+        
+        const weight = parseFloat(response.weight) || 1;
+        const score = parseFloat(response.score) || 0;
+        
+        totalScore += score * weight;
+        totalMaxScore += maxScore * weight;
+      }
+      
+      const actualGrade = totalMaxScore > 0 ? Math.round((totalScore / totalMaxScore) * 100) : 0;
+      
+      // Determine level from actual grade
+      // Aligned with PROFICIENCY_LEVELS: Advanced >= 70%, Intermediate 40-69%, Beginner 0-39%
+      let level = 'low';
+      if (actualGrade >= 70) level = 'high';
+      else if (actualGrade >= 40) level = 'medium';
+      
+      console.log(`[CompetencyMatrix] Test ${idx + 1} (${analysis.test_title}): stored=${analysis.overall_score}%, recalculated=${actualGrade}%`);
+      
+      // Apply this recalculated grade to all skills in this test
+      for (const skillRow of testSkillsResult.rows) {
+        const skillId = skillRow.skill_id;
+        if (!skillScoresMap[skillId]) {
+          skillScoresMap[skillId] = {
+            scores: [],
+            totalScore: 0,
+            count: 0,
+            latestLevel: null
+          };
+        }
+        
+        skillScoresMap[skillId].scores.push(actualGrade);
+        skillScoresMap[skillId].totalScore += actualGrade;
+        skillScoresMap[skillId].count += 1;
+        
+        // Keep the latest level
+        if (idx === 0) {
+          skillScoresMap[skillId].latestLevel = level;
+        }
+      }
+    }
     
-    console.log(`[CompetencyMatrix] Processed ${Object.keys(skillScoresMap).length} unique skills`);
+    console.log(`[CompetencyMatrix] Processed ${Object.keys(skillScoresMap).length} unique skills with recalculated scores`);
 
     // Calculate average for each skill
     Object.keys(skillScoresMap).forEach(skillId => {
@@ -1043,13 +1269,14 @@ router.get('/competency-matrix/:userId', authenticate, async (req, res) => {
       skillScoresMap[skillId].averageScore = Math.round(data.totalScore / data.count);
     });
 
-    // Get employee skill profiles for level/trend data
+    // STEP 5: Get employee skill profiles for level/trend data
     const profiles = await db.query(`
       SELECT 
         esp.skill_id,
         esp.current_level,
         esp.target_level,
-        esp.improvement_trend
+        esp.improvement_trend,
+        esp.last_assessment_score
       FROM employee_skill_profiles esp
       WHERE esp.user_id = $1
     `, [userId]);
@@ -1059,13 +1286,25 @@ router.get('/competency-matrix/:userId', authenticate, async (req, res) => {
     profiles.rows.forEach(profile => {
       profilesMap[profile.skill_id] = profile;
     });
+    
+    console.log(`[CompetencyMatrix] Found ${profiles.rows.length} skill profiles`);
 
-    // Group skills by domain
+    // STEP 6: Build domains with skills
     const domains = {};
-    allSkills.rows.forEach(row => {
+    
+    // Initialize domains
+    allDomainsMap.forEach((domain, domainId) => {
+      domains[domainId] = {
+        ...domain,
+        skills: []
+      };
+    });
+    
+    // Add skills to domains
+    allSkillsMap.forEach((row, skillId) => {
       const domainId = row.domain_id;
-      
       if (!domains[domainId]) {
+        // Domain not in map yet - add it
         domains[domainId] = {
           domain_id: domainId,
           domain_name_ar: row.domain_name_ar,
@@ -1074,30 +1313,39 @@ router.get('/competency-matrix/:userId', authenticate, async (req, res) => {
           skills: []
         };
       }
-
-      // Only add skills that exist (not null from LEFT JOIN)
-      if (row.skill_id) {
-        const skillId = row.skill_id;
-        const profile = profilesMap[skillId] || {};
-        const scoreData = skillScoresMap[skillId];
-        
-        domains[domainId].skills.push({
-          skill_id: skillId,
-          name_ar: row.skill_name_ar,
-          name_en: row.skill_name_en,
-          current_level: profile.current_level || null,
-          target_level: profile.target_level || null,
-          score: scoreData ? scoreData.averageScore : null,
-          trend: profile.improvement_trend || null,
-          weight: row.skill_weight || 1.0,
-          gap: profile.target_level && profile.current_level ? 
-            ['low', 'medium', 'high'].indexOf(profile.target_level) - 
-            ['low', 'medium', 'high'].indexOf(profile.current_level) : 0
-        });
+      
+      const profile = profilesMap[skillId] || {};
+      const scoreData = skillScoresMap[skillId];
+      
+      // Determine the score to display
+      let displayScore = null;
+      let displayLevel = null;
+      
+      if (scoreData) {
+        displayScore = scoreData.averageScore;
+        displayLevel = scoreData.latestLevel;
+      } else if (profile.last_assessment_score !== null && profile.last_assessment_score !== undefined) {
+        // Fallback to profile score if no analysis score
+        displayScore = Math.round(profile.last_assessment_score);
+        displayLevel = profile.current_level;
       }
+      
+      domains[domainId].skills.push({
+        skill_id: skillId,
+        name_ar: row.skill_name_ar,
+        name_en: row.skill_name_en,
+        current_level: profile.current_level || displayLevel || null,
+        target_level: profile.target_level || null,
+        score: displayScore,
+        trend: profile.improvement_trend || null,
+        weight: row.skill_weight || 1.0,
+        gap: profile.target_level && profile.current_level ? 
+          ['low', 'medium', 'high'].indexOf(profile.target_level) - 
+          ['low', 'medium', 'high'].indexOf(profile.current_level) : 0
+      });
     });
 
-    // Calculate domain-level metrics
+    // STEP 7: Calculate domain-level metrics
     let totalSkillsAssessed = 0;
     Object.values(domains).forEach(domain => {
       const skills = domain.skills;
@@ -1126,11 +1374,12 @@ router.get('/competency-matrix/:userId', authenticate, async (req, res) => {
       totalSkillsAssessed += assessedSkills.length;
     });
 
-    const domainsList = Object.values(domains);
+    // Filter out empty domains (no skills)
+    const domainsList = Object.values(domains).filter(d => d.skills.length > 0);
     const totalSkills = domainsList.reduce((sum, d) => sum + d.total_skills, 0);
     const totalDomains = domainsList.length;
 
-    console.log(`[CompetencyMatrix] Response summary: ${totalDomains} domains, ${totalSkills} total skills, ${totalSkillsAssessed} assessed`);
+    console.log(`[CompetencyMatrix] Final: ${totalDomains} domains, ${totalSkills} total skills, ${totalSkillsAssessed} assessed`);
 
     res.json({
       domains: domainsList,

@@ -3,82 +3,114 @@ import { motion } from 'framer-motion';
 import {
   MagnifyingGlassIcon,
   FunnelIcon,
-  PencilIcon,
-  TrashIcon,
-  PlusIcon,
-  ArrowUpTrayIcon,
   ArrowPathIcon,
   ClockIcon,
   AcademicCapIcon,
   LinkIcon,
-  CheckCircleIcon,
   XCircleIcon,
+  StarIcon,
+  SparklesIcon,
+  PencilSquareIcon,
+  TrashIcon,
+  EyeIcon,
+  EyeSlashIcon,
 } from '@heroicons/react/24/outline';
-import { Dialog } from '@headlessui/react';
 import toast from 'react-hot-toast';
-import api, { uploadCoursesCSV, syncCoursesToNeo4j } from '../utils/api';
+import api from '../utils/api';
+import useAuthStore from '../store/authStore';
+import EditCourseModal from '../components/EditCourseModal';
 import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
 
 export default function Courses() {
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === 'admin';
+  
   const [courses, setCourses] = useState([]);
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
-  const [showUploadModal, setShowUploadModal] = useState(false);
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [courseToDelete, setCourseToDelete] = useState(null);
-  const [editingCourse, setEditingCourse] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
-  const [uploadFile, setUploadFile] = useState(null);
-  const [uploadProgress, setUploadProgress] = useState(null);
-  const [uploadStats, setUploadStats] = useState(null);
   const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0 });
+  const [sourceError, setSourceError] = useState(null);
+  const [neo4jFilters, setNeo4jFilters] = useState(null); // Filter options from Neo4j
+  const [enrichingCourseId, setEnrichingCourseId] = useState(null); // Track which course is being enriched
+  const [removingItem, setRemovingItem] = useState(null); // Track item being removed {courseId, type, value}
   const [filters, setFilters] = useState({
     search: '',
     difficulty_level: '',
     skill_id: '',
-  });
-  const [form, setForm] = useState({
-    name_ar: '',
-    name_en: '',
-    description_ar: '',
-    description_en: '',
-    url: '',
-    provider: '',
-    duration_hours: '',
-    difficulty_level: 'beginner',
-    language: 'ar',
-    subject: '',
-    subtitle: '',
     university: '',
-    skill_ids: [],
-    skill_tags: [],
+    subject: '',
   });
+  
+  // Admin edit/delete modal states
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [selectedCourse, setSelectedCourse] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [expandedDescriptions, setExpandedDescriptions] = useState({}); // Track expanded descriptions
+  const [togglingHidden, setTogglingHidden] = useState(null); // Track course being hidden/unhidden
 
   useEffect(() => {
-    fetchCourses();
+    fetchNeo4jCourses();
     fetchSkills();
   }, [filters, pagination.page]);
 
-  const fetchCourses = async () => {
+  // Fetch Neo4j filter options on mount
+  useEffect(() => {
+    if (!neo4jFilters) {
+      fetchNeo4jFilters();
+    }
+  }, []);
+
+  const fetchNeo4jCourses = async () => {
     try {
       setLoading(true);
+      setSourceError(null);
       const params = new URLSearchParams();
       if (filters.search) params.append('search', filters.search);
       if (filters.difficulty_level) params.append('difficulty_level', filters.difficulty_level);
-      if (filters.skill_id) params.append('skill_id', filters.skill_id);
+      if (filters.skill_id) params.append('skill', filters.skill_id);
+      if (filters.university) params.append('university', filters.university);
+      if (filters.subject) params.append('subject', filters.subject);
       params.append('page', pagination.page);
       params.append('limit', pagination.limit);
 
-      const response = await api.get(`/courses?${params.toString()}`);
+      const response = await api.get(`/courses/neo4j?${params.toString()}`);
       setCourses(response.data.courses || []);
-      setPagination(prev => ({ ...prev, total: response.data.pagination.total }));
+      setPagination(prev => ({
+        ...prev,
+        total: response.data.pagination?.total || 0,
+        totalPages: response.data.pagination?.totalPages || 1
+      }));
     } catch (error) {
-      console.error('Fetch courses error:', error);
-      toast.error('فشل في تحميل الدورات');
+      console.error('Fetch Neo4j courses error:', error);
+      const errorData = error.response?.data;
+      const errorCode = errorData?.code;
+      const errorMsg = errorData?.error || errorData?.message || 'فشل في تحميل دورات Neo4j';
+
+      setSourceError({
+        message: errorMsg,
+        code: errorCode,
+        hint: errorData?.hint,
+        source: 'neo4j'
+      });
       setCourses([]);
+
+      if (errorCode !== 'CONFIG_ERROR') {
+        toast.error(errorMsg);
+      }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchNeo4jFilters = async () => {
+    try {
+      const response = await api.get('/courses/neo4j/filters');
+      setNeo4jFilters(response.data);
+    } catch (error) {
+      console.error('Fetch Neo4j filters error:', error);
+      // Don't show error toast for filters
     }
   };
 
@@ -91,267 +123,238 @@ export default function Courses() {
     }
   };
 
-  const openCreateModal = () => {
-    setEditingCourse(null);
-    setForm({
-      name_ar: '',
-      name_en: '',
-      description_ar: '',
-      description_en: '',
-      url: '',
-      provider: '',
-      duration_hours: '',
-      difficulty_level: 'beginner',
-      language: 'ar',
-      subject: '',
-      subtitle: '',
-      university: '',
-      skill_ids: [],
-      skill_tags: [],
-    });
-    setShowModal(true);
-  };
-
-  const openEditModal = (course) => {
-    setEditingCourse(course);
-    setForm({
-      name_ar: course.name_ar || '',
-      name_en: course.name_en || '',
-      description_ar: course.description_ar || '',
-      description_en: course.description_en || '',
-      url: course.url || '',
-      provider: course.provider || '',
-      duration_hours: course.duration_hours || '',
-      difficulty_level: course.difficulty_level || 'beginner',
-      language: course.language || 'ar',
-      subject: course.subject || '',
-      subtitle: course.subtitle || '',
-      university: course.university || '',
-      skill_ids: course.skills ? course.skills.map(s => s.id) : [],
-      skill_tags: course.skill_tags || [],
-    });
-    setShowModal(true);
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
-    try {
-      const data = {
-        ...form,
-        duration_hours: form.duration_hours ? parseFloat(form.duration_hours) : null,
-      };
-
-      if (editingCourse) {
-        await api.patch(`/courses/${editingCourse.id}`, data);
-        toast.success('تم تحديث الدورة بنجاح');
-      } else {
-        await api.post('/courses', data);
-        toast.success('تم إنشاء الدورة بنجاح');
-      }
-      setShowModal(false);
-      fetchCourses();
-    } catch (error) {
-      toast.error(error.response?.data?.error || 'فشل في حفظ الدورة');
-    }
-  };
-
-  const handleDelete = (course) => {
-    setCourseToDelete(course);
-    setShowDeleteModal(true);
-  };
-
-  const confirmDelete = async () => {
-    if (!courseToDelete) return;
-    
-    try {
-      await api.delete(`/courses/${courseToDelete.id}`);
-      toast.success('تم حذف الدورة بنجاح');
-      fetchCourses();
-    } catch (error) {
-      toast.error(error.response?.data?.error || 'فشل في حذف الدورة');
-    } finally {
-      setShowDeleteModal(false);
-      setCourseToDelete(null);
-    }
-  };
-
   const handleSearch = (e) => {
     e.preventDefault();
     setFilters({ ...filters, search: e.target.search.value });
     setPagination({ ...pagination, page: 1 });
   };
 
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (file && file.type === 'text/csv') {
-      setUploadFile(file);
-    } else {
-      toast.error('الرجاء اختيار ملف CSV');
-    }
-  };
-
-  const handleUploadCSV = async () => {
-    if (!uploadFile) {
-      toast.error('الرجاء اختيار ملف');
+  // Handle AI enrichment for a single course
+  const handleEnrichCourse = async (course) => {
+    if (!course.id) {
+      toast.error('معرف الدورة غير متوفر');
       return;
     }
 
-    const startTime = Date.now();
-    let estimatedTotal = 0;
+    setEnrichingCourseId(course.id);
+    const toastId = toast.loading('🤖 جاري تحليل الدورة بالذكاء الاصطناعي...');
 
     try {
-      setUploadProgress({ 
-        status: 'uploading', 
-        message: 'جاري رفع الملف...', 
-        percent: 0,
-        phase: 'upload',
-        startTime
-      });
+      const response = await api.post(`/courses/enrich/${course.id}`);
+      toast.dismiss(toastId);
       
-      const response = await uploadCoursesCSV(uploadFile, (progressData) => {
-        const elapsed = (Date.now() - startTime) / 1000;
-        const estimated = progressData.percent > 0 
-          ? Math.round((elapsed / progressData.percent) * (100 - progressData.percent))
-          : 0;
-          
-        setUploadProgress({ 
-          status: 'uploading', 
-          message: 'جاري رفع الملف...', 
-          percent: progressData.percent,
-          phase: progressData.phase,
-          estimatedTimeLeft: estimated,
-          startTime
-        });
-      });
-      
-      // Calculate estimated processing time (rough estimate: 0.5 seconds per record)
-      estimatedTotal = Math.ceil(response.data.total * 0.5);
-      
-      // After upload, show processing progress
-      setUploadProgress({ 
-        status: 'processing', 
-        message: 'جاري معالجة الدورات...', 
-        percent: 0,
-        phase: 'processing',
-        total: response.data.total,
-        estimatedTimeLeft: estimatedTotal,
-        startTime: Date.now()
-      });
-      
-      // Simulate processing progress with time estimate
-      let currentProgress = 0;
-      const updateInterval = 100; // Update every 100ms
-      const totalUpdates = (estimatedTotal * 1000) / updateInterval;
-      const progressPerUpdate = 100 / totalUpdates;
-      
-      const progressInterval = setInterval(() => {
-        currentProgress += progressPerUpdate;
-        const remaining = Math.max(0, Math.ceil(estimatedTotal * (1 - currentProgress / 100)));
+      if (response.data.success) {
+        toast.success('✅ تم إثراء الدورة بنجاح!');
         
-        if (currentProgress >= 100) {
-          clearInterval(progressInterval);
-          return;
-        }
-        
-        setUploadProgress(prev => ({
-          ...prev,
-          percent: Math.min(Math.round(currentProgress), 99),
-          estimatedTimeLeft: remaining
-        }));
-      }, updateInterval);
-      
-      // Wait for actual processing to complete
-      await new Promise(resolve => setTimeout(resolve, 100));
-      clearInterval(progressInterval);
-      
-      const totalTime = Math.round((Date.now() - startTime) / 1000);
-      
-      const insertedCount = response.data.inserted || 0;
-      const updatedCount = response.data.updated || 0;
-      
-      let message = `تم رفع ${response.data.success} دورة بنجاح من أصل ${response.data.total}`;
-      if (insertedCount > 0 && updatedCount > 0) {
-        message = `تم إضافة ${insertedCount} دورة جديدة وتحديث ${updatedCount} دورة موجودة`;
-      } else if (updatedCount > 0) {
-        message = `تم تحديث ${updatedCount} دورة موجودة`;
-      } else if (insertedCount > 0) {
-        message = `تم إضافة ${insertedCount} دورة جديدة`;
-      }
-      
-      setUploadProgress({ 
-        status: 'completed', 
-        message: message,
-        details: response.data,
-        percent: 100,
-        totalTime
-      });
-      
-      setUploadStats({
-        success: response.data.success,
-        inserted: insertedCount,
-        updated: updatedCount,
-        failed: response.data.failed,
-        total: response.data.total,
-        totalTime
-      });
-      
-      if (response.data.failed > 0) {
-        toast.error(`فشل رفع ${response.data.failed} دورة`);
-      } else if (updatedCount > 0 && insertedCount === 0) {
-        toast.success('تم تحديث جميع الدورات بنجاح');
-      } else if (insertedCount > 0 && updatedCount === 0) {
-        toast.success('تم إضافة جميع الدورات بنجاح');
+        // Update the course in the local state with enriched data
+        setCourses(prevCourses => 
+          prevCourses.map(c => {
+            if (c.id === course.id) {
+              const enrichment = response.data.enrichment;
+              return {
+                ...c,
+                domains: enrichment.suggested_domains || [],
+                subject: enrichment.suggested_domains?.[0] || c.subject,
+                extracted_skills: enrichment.extracted_skills || [],
+                learning_outcomes: enrichment.learning_outcomes || [],
+                target_audience: enrichment.target_audience || null,
+                career_paths: enrichment.career_paths || [],
+                industry_tags: enrichment.industry_tags || [],
+                summary_ar: enrichment.summary_ar || '',
+                summary_en: enrichment.summary_en || '',
+                quality_indicators: enrichment.quality_indicators || null,
+                is_enriched: true,
+                enriched_at: enrichment.enriched_at
+              };
+            }
+            return c;
+          })
+        );
       } else {
-        toast.success('تمت العملية بنجاح');
+        toast.error('فشل في إثراء الدورة');
       }
-      
-      fetchCourses();
-      setTimeout(() => {
-        setShowUploadModal(false);
-        setUploadFile(null);
-        setUploadProgress(null);
-        setUploadStats(null);
-      }, 5000);
     } catch (error) {
-      setUploadProgress({ 
-        status: 'error', 
-        message: error.response?.data?.error || 'فشل في رفع الملف',
-        percent: 0
-      });
-      toast.error('فشل في رفع الملف');
+      toast.dismiss(toastId);
+      console.error('Enrich course error:', error);
+      
+      if (error.response?.data?.code === 'CONFIG_ERROR') {
+        toast.error('OpenAI API غير مُعدّ. يرجى تكوين OPENAI_API_KEY');
+      } else {
+        toast.error(error.response?.data?.message || 'فشل في إثراء الدورة');
+      }
+    } finally {
+      setEnrichingCourseId(null);
     }
   };
 
-  const handleSyncToNeo4j = async () => {
+  // Handle quick removal of domain from course card
+  const handleRemoveDomain = async (course, domainToRemove) => {
+    if (!isAdmin) return;
+    
+    setRemovingItem({ courseId: course.id, type: 'domain', value: domainToRemove });
+    
     try {
-      toast.loading('جاري المزامنة مع Neo4j...');
-      const response = await syncCoursesToNeo4j();
-      toast.dismiss();
-      toast.success(`تمت مزامنة ${response.data.success} دورة من أصل ${response.data.total}`);
-      fetchCourses();
+      const currentDomains = course.domains || [course.subject].filter(Boolean);
+      const newDomains = currentDomains.filter(d => d !== domainToRemove);
+      
+      await api.patch(`/courses/neo4j/${course.id}`, {
+        domains: newDomains,
+        subject: newDomains[0] || ''
+      });
+      
+      // Update local state
+      setCourses(prev => prev.map(c => 
+        c.id === course.id 
+          ? { ...c, domains: newDomains, subject: newDomains[0] || '' }
+          : c
+      ));
+      
+      toast.success('تم إزالة المجال');
     } catch (error) {
-      toast.dismiss();
-      toast.error(error.response?.data?.error || 'فشل في المزامنة');
+      console.error('Remove domain error:', error);
+      toast.error('فشل في إزالة المجال');
+    } finally {
+      setRemovingItem(null);
+    }
+  };
+
+  // Handle quick removal of skill from course card
+  const handleRemoveSkill = async (course, skillToRemove) => {
+    if (!isAdmin) return;
+    
+    setRemovingItem({ courseId: course.id, type: 'skill', value: skillToRemove });
+    
+    try {
+      await api.delete(`/courses/neo4j/${course.id}/skills/${encodeURIComponent(skillToRemove)}`);
+      
+      // Update local state
+      setCourses(prev => prev.map(c => {
+        if (c.id === course.id) {
+          return {
+            ...c,
+            skills: (c.skills || []).filter(s => 
+              (s.name_ar !== skillToRemove) && (s.name_en !== skillToRemove)
+            ),
+            extracted_skills: (c.extracted_skills || []).filter(s => s !== skillToRemove)
+          };
+        }
+        return c;
+      }));
+      
+      toast.success('تم إزالة المهارة');
+    } catch (error) {
+      console.error('Remove skill error:', error);
+      toast.error('فشل في إزالة المهارة');
+    } finally {
+      setRemovingItem(null);
     }
   };
 
   const getDifficultyLabel = (level) => {
+    const levelLower = level?.toLowerCase();
     const labels = {
       beginner: 'مبتدئ',
       intermediate: 'متوسط',
       advanced: 'متقدم',
     };
-    return labels[level] || level;
+    return labels[levelLower] || level;
   };
 
   const getDifficultyColor = (level) => {
+    const levelLower = level?.toLowerCase();
     const colors = {
       beginner: 'bg-green-100 text-green-700',
       intermediate: 'bg-yellow-100 text-yellow-700',
       advanced: 'bg-red-100 text-red-700',
     };
-    return colors[level] || 'bg-slate-100 text-slate-700';
+    return colors[levelLower] || 'bg-slate-100 text-slate-700';
+  };
+
+  // Toggle description expansion
+  const toggleDescription = (courseId) => {
+    setExpandedDescriptions(prev => ({
+      ...prev,
+      [courseId]: !prev[courseId]
+    }));
+  };
+
+  // Admin: Open edit modal
+  const handleEditCourse = (course) => {
+    setSelectedCourse(course);
+    setEditModalOpen(true);
+  };
+
+  // Admin: Open delete confirmation
+  const handleDeleteClick = (course) => {
+    setSelectedCourse(course);
+    setDeleteModalOpen(true);
+  };
+
+  // Admin: Confirm delete course
+  const handleDeleteConfirm = async () => {
+    if (!selectedCourse?.id) return;
+    
+    setDeleting(true);
+    const toastId = toast.loading('جاري حذف الدورة...');
+    
+    try {
+      await api.delete(`/courses/neo4j/${selectedCourse.id}`);
+      toast.dismiss(toastId);
+      toast.success('تم حذف الدورة بنجاح');
+      
+      // Remove from local state
+      setCourses(prev => prev.filter(c => c.id !== selectedCourse.id));
+      setPagination(prev => ({ ...prev, total: prev.total - 1 }));
+      
+      setDeleteModalOpen(false);
+      setSelectedCourse(null);
+    } catch (error) {
+      toast.dismiss(toastId);
+      console.error('Delete course error:', error);
+      toast.error(error.response?.data?.message || 'فشل في حذف الدورة');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // Admin: Handle save from edit modal
+  const handleSaveCourse = (updatedCourse) => {
+    setCourses(prev => prev.map(c => 
+      c.id === updatedCourse.id ? { ...c, ...updatedCourse } : c
+    ));
+    setSelectedCourse(null);
+  };
+
+  // Admin: Toggle course hidden status
+  const handleToggleHidden = async (course) => {
+    if (!course.id) {
+      toast.error('معرف الدورة غير متوفر');
+      return;
+    }
+
+    setTogglingHidden(course.id);
+    const isCurrentlyHidden = course.is_hidden;
+    const toastId = toast.loading(isCurrentlyHidden ? 'جاري إظهار الدورة...' : 'جاري إخفاء الدورة...');
+
+    try {
+      const response = await api.post(`/courses/neo4j/${course.id}/toggle-hidden`, {
+        hidden: !isCurrentlyHidden
+      });
+      
+      toast.dismiss(toastId);
+      toast.success(response.data.message);
+
+      // Update local state
+      setCourses(prev => prev.map(c => 
+        c.id === course.id ? { ...c, is_hidden: response.data.hidden } : c
+      ));
+    } catch (error) {
+      toast.dismiss(toastId);
+      console.error('Toggle hidden error:', error);
+      toast.error(error.response?.data?.message || 'فشل في تغيير حالة الدورة');
+    } finally {
+      setTogglingHidden(null);
+    }
   };
 
   return (
@@ -359,30 +362,17 @@ export default function Courses() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-primary-700">إدارة الدورات التدريبية</h1>
-          <p className="text-slate-500">إدارة الدورات ومزامنتها مع نظام التوصيات الذكي</p>
+          <h1 className="text-2xl font-bold text-primary-700">الدورات التدريبية</h1>
+          <p className="text-slate-500">استعرض الدورات المتاحة في نظام التوصيات الذكي</p>
         </div>
-        <div className="flex gap-3">
-          <button
-            onClick={handleSyncToNeo4j}
-            className="btn btn-secondary"
-            title="مزامنة جميع الدورات مع Neo4j"
-          >
-            <ArrowPathIcon className="w-5 h-5" />
-            مزامنة Neo4j
-          </button>
-          <button
-            onClick={() => setShowUploadModal(true)}
-            className="btn btn-secondary"
-          >
-            <ArrowUpTrayIcon className="w-5 h-5" />
-            رفع CSV
-          </button>
-          <button onClick={openCreateModal} className="btn btn-primary">
-            <PlusIcon className="w-5 h-5" />
-            إضافة دورة
-          </button>
-        </div>
+        <button
+          onClick={fetchNeo4jCourses}
+          className="btn btn-secondary"
+          title="تحديث الدورات"
+        >
+          <ArrowPathIcon className="w-5 h-5" />
+          تحديث
+        </button>
       </div>
 
       {/* Search and Filters */}
@@ -414,39 +404,123 @@ export default function Courses() {
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
-            className="grid grid-cols-2 gap-4 pt-4 border-t"
+            className="space-y-4 pt-4 border-t"
           >
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">
-                المستوى
-              </label>
-              <select
-                value={filters.difficulty_level}
-                onChange={(e) => setFilters({ ...filters, difficulty_level: e.target.value })}
-                className="input w-full"
-              >
-                <option value="">الكل</option>
-                <option value="beginner">مبتدئ</option>
-                <option value="intermediate">متوسط</option>
-                <option value="advanced">متقدم</option>
-              </select>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {/* Level Filter */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  المستوى
+                </label>
+                <select
+                  value={filters.difficulty_level}
+                  onChange={(e) => setFilters({ ...filters, difficulty_level: e.target.value })}
+                  className="input w-full"
+                >
+                  <option value="">الكل</option>
+                  {neo4jFilters?.levels?.length > 0 ? (
+                    neo4jFilters.levels.map(level => {
+                      const levelLower = level?.toLowerCase();
+                      const label = levelLower === 'beginner' ? 'مبتدئ' : 
+                                    levelLower === 'intermediate' ? 'متوسط' : 
+                                    levelLower === 'advanced' ? 'متقدم' : level;
+                      return (
+                        <option key={level} value={level}>
+                          {label}
+                        </option>
+                      );
+                    })
+                  ) : (
+                    <>
+                      <option value="beginner">مبتدئ</option>
+                      <option value="intermediate">متوسط</option>
+                      <option value="advanced">متقدم</option>
+                    </>
+                  )}
+                </select>
+              </div>
+
+              {/* Subject Filter */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  الموضوع
+                </label>
+                <select
+                  value={filters.subject}
+                  onChange={(e) => setFilters({ ...filters, subject: e.target.value })}
+                  className="input w-full"
+                >
+                  <option value="">الكل</option>
+                  {neo4jFilters?.subjects?.map(subject => (
+                    <option key={subject} value={subject}>
+                      {subject}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* University Filter */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  الجامعة/المؤسسة
+                </label>
+                <select
+                  value={filters.university}
+                  onChange={(e) => setFilters({ ...filters, university: e.target.value })}
+                  className="input w-full"
+                >
+                  <option value="">الكل</option>
+                  {neo4jFilters?.universities?.map(university => (
+                    <option key={university} value={university}>
+                      {university}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Skill Filter */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  المهارة
+                </label>
+                <select
+                  value={filters.skill_id}
+                  onChange={(e) => setFilters({ ...filters, skill_id: e.target.value })}
+                  className="input w-full"
+                >
+                  <option value="">الكل</option>
+                  {neo4jFilters?.skills?.length > 0 ? (
+                    neo4jFilters.skills.map(skill => (
+                      <option key={skill} value={skill}>
+                        {skill}
+                      </option>
+                    ))
+                  ) : (
+                    skills.map(skill => (
+                      <option key={skill.id} value={skill.name_en || skill.name_ar}>
+                        {skill.name_en || skill.name_ar}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">
-                المهارة
-              </label>
-              <select
-                value={filters.skill_id}
-                onChange={(e) => setFilters({ ...filters, skill_id: e.target.value })}
-                className="input w-full"
+
+            {/* Clear Filters Button */}
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setFilters({
+                  search: '',
+                  difficulty_level: '',
+                  skill_id: '',
+                  university: '',
+                  subject: '',
+                })}
+                className="text-sm text-slate-600 hover:text-primary-600 transition-colors"
               >
-                <option value="">الكل</option>
-                {skills.map(skill => (
-                  <option key={skill.id} value={skill.id}>
-                    {skill.name_en || skill.name_ar}
-                  </option>
-                ))}
-              </select>
+                مسح جميع الفلاتر
+              </button>
             </div>
           </motion.div>
         )}
@@ -462,21 +536,73 @@ export default function Courses() {
             </div>
           ))}
         </div>
+      ) : sourceError ? (
+        <div className="card p-12 text-center">
+          {sourceError?.code === 'CONFIG_ERROR' ? (
+            <>
+              <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg className="w-10 h-10 text-amber-600" viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="12" cy="12" r="3" />
+                  <circle cx="5" cy="6" r="2" />
+                  <circle cx="19" cy="6" r="2" />
+                  <circle cx="5" cy="18" r="2" />
+                  <circle cx="19" cy="18" r="2" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-slate-800 mb-2">
+                خدمة الدورات غير مُعدّة
+              </h3>
+              <p className="text-slate-500 mb-4">
+                يرجى تكوين بيانات اعتماد Neo4j API للوصول إلى قاعدة بيانات الدورات
+              </p>
+              <div className="bg-slate-50 rounded-lg p-4 text-right max-w-md mx-auto mb-4">
+                <p className="text-sm text-slate-600 font-mono">
+                  # أضف هذه المتغيرات في ملف .env
+                  <br />
+                  NEO4J_CLIENT_ID=...
+                  <br />
+                  NEO4J_CLIENT_SECRET=...
+                </p>
+              </div>
+              <button 
+                onClick={fetchNeo4jCourses} 
+                className="btn btn-primary inline-flex"
+              >
+                <ArrowPathIcon className="w-5 h-5" />
+                إعادة المحاولة
+              </button>
+            </>
+          ) : (
+            <>
+              <XCircleIcon className="w-16 h-16 text-red-300 mx-auto mb-4" />
+              <h3 className="text-lg font-semibold text-slate-800 mb-2">
+                تعذر تحميل الدورات
+              </h3>
+              <p className="text-slate-500 mb-4">{sourceError?.message}</p>
+              <button 
+                onClick={fetchNeo4jCourses} 
+                className="btn btn-primary inline-flex"
+              >
+                <ArrowPathIcon className="w-5 h-5" />
+                إعادة المحاولة
+              </button>
+            </>
+          )}
+        </div>
       ) : courses.length === 0 ? (
         <div className="card p-12 text-center">
           <AcademicCapIcon className="w-16 h-16 text-slate-300 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-slate-800 mb-2">لا توجد دورات</h3>
-          <p className="text-slate-500 mb-4">ابدأ بإضافة دورة أو رفع ملف CSV</p>
-          <div className="flex gap-3 justify-center">
-            <button onClick={openCreateModal} className="btn btn-primary inline-flex">
-              <PlusIcon className="w-5 h-5" />
-              إضافة دورة
-            </button>
-            <button onClick={() => setShowUploadModal(true)} className="btn btn-secondary inline-flex">
-              <ArrowUpTrayIcon className="w-5 h-5" />
-              رفع CSV
-            </button>
-          </div>
+          <p className="text-slate-500 mb-4">
+            لم يتم العثور على دورات مطابقة للبحث
+          </p>
+          <button 
+            onClick={fetchNeo4jCourses} 
+            className="btn btn-primary inline-flex"
+          >
+            <ArrowPathIcon className="w-5 h-5" />
+            تحديث
+          </button>
         </div>
       ) : (
         <>
@@ -486,35 +612,64 @@ export default function Courses() {
                 key={course.id}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="card p-6 hover:shadow-lg transition-shadow"
+                className={`card p-6 hover:shadow-lg transition-shadow ${
+                  course.is_hidden ? 'bg-gray-50 border-gray-300 opacity-75' : ''
+                }`}
               >
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <h3 className="text-lg font-semibold text-slate-800">
+                    <div className="flex items-center gap-3 mb-2 flex-wrap">
+                      <h3 className={`text-lg font-semibold ${course.is_hidden ? 'text-slate-400' : 'text-slate-800'}`}>
                         {course.name_ar}
                       </h3>
+                      {/* Domain badges next to title */}
+                      {(course.domains?.length > 0 || course.subject) && (
+                        (course.domains?.length > 0 ? course.domains.slice(0, 2) : [course.subject]).map((domain, idx) => (
+                          <span 
+                            key={`title-domain-${idx}`}
+                            className={`px-2 py-1 text-xs font-medium rounded ${
+                              idx === 0 ? 'bg-primary-100 text-primary-700' : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            {domain}
+                          </span>
+                        ))
+                      )}
+                      {/* Hidden badge */}
+                      {isAdmin && course.is_hidden && (
+                        <span className="px-2 py-1 text-xs font-medium rounded bg-gray-200 text-gray-600 flex items-center gap-1">
+                          <EyeSlashIcon className="w-3 h-3" />
+                          مخفي
+                        </span>
+                      )}
                       <span className={`px-2 py-1 text-xs font-medium rounded ${getDifficultyColor(course.difficulty_level)}`}>
                         {getDifficultyLabel(course.difficulty_level)}
                       </span>
-                      {course.synced_to_neo4j && (
-                        <span className="px-2 py-1 text-xs font-medium bg-green-100 text-green-700 rounded flex items-center gap-1">
-                          <CheckCircleIcon className="w-3 h-3" />
-                          متزامن
-                        </span>
-                      )}
-                      {course.synced_to_neo4j === false && (
-                        <span className="px-2 py-1 text-xs font-medium bg-yellow-100 text-yellow-700 rounded flex items-center gap-1">
-                          <XCircleIcon className="w-3 h-3" />
-                          غير متزامن
+                      {/* Rating */}
+                      {course.rating && (
+                        <span className="px-2 py-1 text-xs font-medium bg-amber-100 text-amber-700 rounded flex items-center gap-1">
+                          <StarIcon className="w-3 h-3" />
+                          {course.rating}
                         </span>
                       )}
                     </div>
                     
                     {course.description_ar && (
-                      <p className="text-sm text-slate-600 mb-3 line-clamp-2">
-                        {course.description_ar}
-                      </p>
+                      <div className="mb-3">
+                        <p className={`text-sm text-slate-600 ${
+                          expandedDescriptions[course.id] ? '' : 'line-clamp-2'
+                        }`}>
+                          {course.description_ar}
+                        </p>
+                        {course.description_ar.length > 150 && (
+                          <button
+                            onClick={() => toggleDescription(course.id)}
+                            className="text-xs text-primary-600 hover:text-primary-700 mt-1 font-medium"
+                          >
+                            {expandedDescriptions[course.id] ? 'اقرأ أقل ↑' : 'اقرأ المزيد ↓'}
+                          </button>
+                        )}
+                      </div>
                     )}
 
                     {course.subtitle && (
@@ -528,13 +683,6 @@ export default function Courses() {
                         <div className="flex items-center gap-1">
                           <AcademicCapIcon className="w-4 h-4" />
                           <span>{course.university}</span>
-                        </div>
-                      )}
-                      {course.subject && (
-                        <div className="flex items-center gap-1">
-                          <span className="px-2 py-1 bg-slate-100 text-slate-700 rounded text-xs">
-                            {course.subject}
-                          </span>
                         </div>
                       )}
                       {course.provider && (
@@ -559,72 +707,183 @@ export default function Courses() {
                       )}
                     </div>
 
-                    {((course.skills && course.skills.length > 0) || (course.skill_tags && course.skill_tags.length > 0)) && (
+                    {/* Skills Section */}
+                    {((course.skills && course.skills.length > 0) || (course.extracted_skills && course.extracted_skills.length > 0)) && (
                       <div className="flex flex-wrap gap-2 mt-3">
-                        {(() => {
-                          // Collect all domain skill names (English) to avoid duplicates
-                          const domainSkillNames = new Set(
-                            (course.skills || [])
-                              .filter(skill => skill && skill.name_en)
-                              .map(skill => skill.name_en.toLowerCase().trim())
-                          );
-                          
-                          // Get unique skill tags that don't overlap with domain skills
-                          const seen = new Set([...domainSkillNames]);
-                          const uniqueTags = (course.skill_tags || []).filter(tag => {
-                            const normalized = tag.toLowerCase().trim();
-                            if (seen.has(normalized)) {
-                              return false;
-                            }
-                            seen.add(normalized);
-                            return true;
-                          });
-                          
-                          return (
-                            <>
-                              {/* Domain skills (from skills table) - show only English name */}
-                              {course.skills && course.skills.map(skill => skill && skill.name_en && (
-                                <span
-                                  key={skill.id}
-                                  className="px-2 py-1 text-xs bg-primary-50 text-primary-700 rounded"
-                                  title="مهارة مطلوبة"
+                        {/* Regular skills from relationships */}
+                        {(course.skills || []).map((skill, idx) => (
+                          skill && (skill.name_ar || skill.name_en) && (
+                            <span
+                              key={`skill-${idx}`}
+                              className="px-2 py-1 text-xs bg-green-50 text-green-700 rounded flex items-center gap-1"
+                              title={skill.relevance ? `ملاءمة: ${(skill.relevance * 100).toFixed(0)}%` : 'مهارة'}
+                            >
+                              {skill.name_ar || skill.name_en}
+                              {isAdmin && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRemoveSkill(course, skill.name_ar || skill.name_en);
+                                  }}
+                                  disabled={removingItem?.courseId === course.id && removingItem?.value === (skill.name_ar || skill.name_en)}
+                                  className="hover:text-red-500 transition-colors"
+                                  title="إزالة المهارة"
                                 >
-                                  {skill.name_en}
+                                  <XCircleIcon className={`w-3.5 h-3.5 ${
+                                    removingItem?.courseId === course.id && removingItem?.value === (skill.name_ar || skill.name_en)
+                                      ? 'animate-spin' : ''
+                                  }`} />
+                                </button>
+                              )}
+                            </span>
+                          )
+                        ))}
+                        {/* AI-extracted skills (if enriched) */}
+                        {course.extracted_skills && course.extracted_skills.map((skill, idx) => (
+                          <span
+                            key={`ai-skill-${idx}`}
+                            className="px-2 py-1 text-xs bg-purple-50 text-purple-700 rounded border border-purple-200 flex items-center gap-1"
+                            title="مهارة مستخرجة بالذكاء الاصطناعي"
+                          >
+                            🤖 {skill}
+                            {isAdmin && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRemoveSkill(course, skill);
+                                }}
+                                disabled={removingItem?.courseId === course.id && removingItem?.value === skill}
+                                className="hover:text-red-500 transition-colors"
+                                title="إزالة المهارة"
+                              >
+                                <XCircleIcon className={`w-3.5 h-3.5 ${
+                                  removingItem?.courseId === course.id && removingItem?.value === skill
+                                    ? 'animate-spin' : ''
+                                }`} />
+                              </button>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* AI-Enriched Content Section */}
+                    {course.is_enriched && (
+                      <div className="mt-4 pt-4 border-t border-slate-200">
+                        {/* AI Summary */}
+                        {course.summary_ar && (
+                          <p className="text-sm text-slate-600 mb-2 bg-slate-50 p-2 rounded">
+                            {course.summary_ar}
+                          </p>
+                        )}
+                        
+                        {/* Learning Outcomes */}
+                        {course.learning_outcomes && course.learning_outcomes.length > 0 && (
+                          <div className="mb-2">
+                            <span className="text-xs font-medium text-slate-500 block mb-1">مخرجات التعلم:</span>
+                            <div className="flex flex-wrap gap-1">
+                              {course.learning_outcomes.slice(0, 3).map((outcome, idx) => (
+                                <span key={idx} className="text-xs text-slate-600 bg-blue-50 px-2 py-1 rounded">
+                                  ✓ {outcome.length > 50 ? outcome.substring(0, 50) + '...' : outcome}
                                 </span>
                               ))}
-                              
-                              {/* Skill tags (from CSV) - only show tags not already in domain skills */}
-                              {uniqueTags.map((tag, idx) => (
-                                <span
-                                  key={`tag-${idx}`}
-                                  className="px-2 py-1 text-xs bg-slate-100 text-slate-700 rounded border border-slate-300"
-                                  title="مهارة إضافية"
-                                >
-                                  {tag}
-                                </span>
-                              ))}
-                            </>
-                          );
-                        })()}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Career Paths & Industry Tags */}
+                        <div className="flex flex-wrap gap-2">
+                          {course.career_paths && course.career_paths.slice(0, 3).map((path, idx) => (
+                            <span key={`career-${idx}`} className="text-xs text-green-700 bg-green-50 px-2 py-1 rounded">
+                              💼 {path}
+                            </span>
+                          ))}
+                          {course.industry_tags && course.industry_tags.slice(0, 2).map((tag, idx) => (
+                            <span key={`industry-${idx}`} className="text-xs text-blue-700 bg-blue-50 px-2 py-1 rounded">
+                              🏢 {tag}
+                            </span>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
 
-                  <div className="flex gap-2 mr-4">
-                    <button
-                      onClick={() => openEditModal(course)}
-                      className="p-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
-                      title="تعديل"
-                    >
-                      <PencilIcon className="w-5 h-5" />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(course)}
-                      className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                      title="حذف"
-                    >
-                      <TrashIcon className="w-5 h-5" />
-                    </button>
+                  <div className="flex flex-col gap-2 mr-4">
+                    {/* Admin: Edit button */}
+                    {isAdmin && (
+                      <button
+                        onClick={() => handleEditCourse(course)}
+                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-blue-200"
+                        title="تعديل الدورة"
+                      >
+                        <PencilSquareIcon className="w-5 h-5" />
+                      </button>
+                    )}
+                    {/* Admin: Delete button */}
+                    {isAdmin && (
+                      <button
+                        onClick={() => handleDeleteClick(course)}
+                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-red-200"
+                        title="حذف الدورة"
+                      >
+                        <TrashIcon className="w-5 h-5" />
+                      </button>
+                    )}
+                    {/* Admin: Hide/Unhide button */}
+                    {isAdmin && (
+                      <button
+                        onClick={() => handleToggleHidden(course)}
+                        disabled={togglingHidden === course.id}
+                        className={`p-2 rounded-lg transition-colors border ${
+                          course.is_hidden
+                            ? 'text-gray-600 hover:bg-gray-50 border-gray-300 bg-gray-100'
+                            : 'text-green-600 hover:bg-green-50 border-green-200'
+                        } ${togglingHidden === course.id ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        title={course.is_hidden ? 'إظهار الدورة (مخفية حالياً)' : 'إخفاء الدورة'}
+                      >
+                        {togglingHidden === course.id ? (
+                          <ArrowPathIcon className="w-5 h-5 animate-spin" />
+                        ) : course.is_hidden ? (
+                          <EyeSlashIcon className="w-5 h-5" />
+                        ) : (
+                          <EyeIcon className="w-5 h-5" />
+                        )}
+                      </button>
+                    )}
+                    {/* AI Enrich button */}
+                    {isAdmin && (
+                      <button
+                        onClick={() => handleEnrichCourse(course)}
+                        disabled={enrichingCourseId === course.id}
+                        className={`p-2 rounded-lg transition-colors flex items-center gap-1 ${
+                          course.is_enriched 
+                            ? 'text-purple-600 hover:bg-purple-50 border border-purple-200' 
+                            : 'text-amber-600 hover:bg-amber-50 border border-amber-200'
+                        } ${enrichingCourseId === course.id ? 'opacity-50 cursor-not-allowed animate-pulse' : ''}`}
+                        title={course.is_enriched ? 'إعادة الإثراء بالذكاء الاصطناعي' : 'إثراء بالذكاء الاصطناعي'}
+                      >
+                        {enrichingCourseId === course.id ? (
+                          <ArrowPathIcon className="w-5 h-5 animate-spin" />
+                        ) : (
+                          <SparklesIcon className="w-5 h-5" />
+                        )}
+                        <span className="text-xs hidden sm:inline">
+                          {enrichingCourseId === course.id ? 'جاري...' : 'AI'}
+                        </span>
+                      </button>
+                    )}
+                    {/* External link */}
+                    {course.url && (
+                      <a
+                        href={course.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-2 text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
+                        title="فتح الدورة"
+                      >
+                        <LinkIcon className="w-5 h-5" />
+                      </a>
+                    )}
                   </div>
                 </div>
               </motion.div>
@@ -656,445 +915,30 @@ export default function Courses() {
         </>
       )}
 
-      {/* Create/Edit Modal */}
-      <Dialog open={showModal} onClose={() => setShowModal(false)} className="relative z-50">
-        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
-        <div className="fixed inset-0 flex items-center justify-center p-4">
-          <Dialog.Panel className="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-slate-100">
-              <Dialog.Title className="text-xl font-bold text-primary-700">
-                {editingCourse ? 'تعديل الدورة' : 'إضافة دورة جديدة'}
-              </Dialog.Title>
-            </div>
+      {/* Admin: Edit Course Modal */}
+      <EditCourseModal
+        isOpen={editModalOpen}
+        onClose={() => {
+          setEditModalOpen(false);
+          setSelectedCourse(null);
+        }}
+        course={selectedCourse}
+        onSave={handleSaveCourse}
+        filterOptions={neo4jFilters || {}}
+      />
 
-            <form onSubmit={handleSubmit} className="p-6 space-y-6">
-              {/* Name */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    الاسم (عربي) *
-                  </label>
-                  <input
-                    type="text"
-                    value={form.name_ar}
-                    onChange={(e) => setForm({ ...form, name_ar: e.target.value })}
-                    className="input w-full"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    الاسم (إنجليزي)
-                  </label>
-                  <input
-                    type="text"
-                    value={form.name_en}
-                    onChange={(e) => setForm({ ...form, name_en: e.target.value })}
-                    className="input w-full"
-                  />
-                </div>
-              </div>
-
-              {/* Description */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    الوصف (عربي)
-                  </label>
-                  <textarea
-                    value={form.description_ar}
-                    onChange={(e) => setForm({ ...form, description_ar: e.target.value })}
-                    className="input w-full"
-                    rows={3}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    الوصف (إنجليزي)
-                  </label>
-                  <textarea
-                    value={form.description_en}
-                    onChange={(e) => setForm({ ...form, description_en: e.target.value })}
-                    className="input w-full"
-                    rows={3}
-                  />
-                </div>
-              </div>
-
-              {/* URL and Provider */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    رابط الدورة
-                  </label>
-                  <input
-                    type="url"
-                    value={form.url}
-                    onChange={(e) => setForm({ ...form, url: e.target.value })}
-                    className="input w-full"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    مقدم الدورة
-                  </label>
-                  <input
-                    type="text"
-                    value={form.provider}
-                    onChange={(e) => setForm({ ...form, provider: e.target.value })}
-                    className="input w-full"
-                  />
-                </div>
-              </div>
-
-              {/* Subject, Subtitle, University */}
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    الموضوع/التخصص
-                  </label>
-                  <input
-                    type="text"
-                    value={form.subject}
-                    onChange={(e) => setForm({ ...form, subject: e.target.value })}
-                    className="input w-full"
-                    placeholder="مثال: علوم الحاسب"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    العنوان الفرعي
-                  </label>
-                  <input
-                    type="text"
-                    value={form.subtitle}
-                    onChange={(e) => setForm({ ...form, subtitle: e.target.value })}
-                    className="input w-full"
-                    placeholder="مثال: مقدمة شاملة للبرمجة"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    الجامعة/المؤسسة
-                  </label>
-                  <input
-                    type="text"
-                    value={form.university}
-                    onChange={(e) => setForm({ ...form, university: e.target.value })}
-                    className="input w-full"
-                    placeholder="مثال: جامعة ستانفورد"
-                  />
-                </div>
-              </div>
-
-              {/* Details */}
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    الساعات المقدرة
-                  </label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={form.duration_hours}
-                    onChange={(e) => setForm({ ...form, duration_hours: e.target.value })}
-                    className="input w-full"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    المستوى *
-                  </label>
-                  <select
-                    value={form.difficulty_level}
-                    onChange={(e) => setForm({ ...form, difficulty_level: e.target.value })}
-                    className="input w-full"
-                    required
-                  >
-                    <option value="beginner">مبتدئ</option>
-                    <option value="intermediate">متوسط</option>
-                    <option value="advanced">متقدم</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    اللغة
-                  </label>
-                  <select
-                    value={form.language}
-                    onChange={(e) => setForm({ ...form, language: e.target.value })}
-                    className="input w-full"
-                  >
-                    <option value="ar">عربي</option>
-                    <option value="en">إنجليزي</option>
-                    <option value="both">ثنائي اللغة</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Skills */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
-                  المهارات المرتبطة (من المجالات)
-                </label>
-                <select
-                  multiple
-                  value={form.skill_ids}
-                  onChange={(e) => setForm({ ...form, skill_ids: Array.from(e.target.selectedOptions, option => option.value) })}
-                  className="input w-full"
-                  size="5"
-                >
-                  {skills.map(skill => (
-                    <option key={skill.id} value={skill.id}>
-                      {skill.name_en || skill.name_ar}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-slate-500 mt-1">
-                  اضغط Ctrl/Cmd لاختيار أكثر من مهارة
-                </p>
-              </div>
-
-              {/* Skill Tags */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
-                  مهارات إضافية (وسوم)
-                </label>
-                <input
-                  type="text"
-                  value={form.skill_tags.join(', ')}
-                  onChange={(e) => setForm({ ...form, skill_tags: e.target.value.split(',').map(s => s.trim()).filter(s => s) })}
-                  className="input w-full"
-                  placeholder="مثال: البرمجة, تحليل البيانات, التصميم"
-                />
-                <p className="text-xs text-slate-500 mt-1">
-                  افصل المهارات بفاصلة (,) - هذه المهارات ستظهر كوسوم منفصلة
-                </p>
-                {form.skill_tags.length > 0 && (
-                  <div className="flex flex-wrap gap-2 mt-2">
-                    {form.skill_tags.map((tag, idx) => (
-                      <span
-                        key={idx}
-                        className="px-2 py-1 text-xs bg-slate-100 text-slate-700 rounded border border-slate-300"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Actions */}
-              <div className="flex gap-3 justify-end pt-4 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setShowModal(false)}
-                  className="btn btn-secondary"
-                >
-                  إلغاء
-                </button>
-                <button type="submit" className="btn btn-primary">
-                  {editingCourse ? 'تحديث' : 'إنشاء'}
-                </button>
-              </div>
-            </form>
-          </Dialog.Panel>
-        </div>
-      </Dialog>
-
-      {/* CSV Upload Modal */}
-      <Dialog open={showUploadModal} onClose={() => !uploadProgress && setShowUploadModal(false)} className="relative z-50">
-        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
-        <div className="fixed inset-0 flex items-center justify-center p-4">
-          <Dialog.Panel className="bg-white rounded-2xl shadow-xl w-full max-w-2xl">
-            <div className="p-6 border-b border-slate-100">
-              <Dialog.Title className="text-xl font-bold text-primary-700">
-                رفع ملف CSV للدورات
-              </Dialog.Title>
-            </div>
-
-            <div className="p-6 space-y-6">
-              {!uploadProgress ? (
-                <>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">
-                      اختر ملف CSV
-                    </label>
-                    <input
-                      type="file"
-                      accept=".csv"
-                      onChange={handleFileChange}
-                      className="input w-full"
-                    />
-                  </div>
-
-                  <div className="bg-slate-50 rounded-lg p-4">
-                    <h4 className="font-medium text-slate-800 mb-2">صيغة الملف المطلوبة:</h4>
-                    <code className="text-xs bg-white p-2 rounded block overflow-x-auto">
-                      name_ar,name_en,description_ar,url,provider,duration_hours,difficulty_level,language,subject,subtitle,university,skills
-                    </code>
-                    <p className="text-xs text-slate-500 mt-2">
-                      • المهارات: افصلها بفاصلة (مثال: "البرمجة,تحليل البيانات")
-                      <br />
-                      • المستوى: beginner أو intermediate أو advanced
-                      <br />
-                      • الحقول الجديدة: subject (الموضوع), subtitle (العنوان الفرعي), university (الجامعة)
-                      <br />
-                      • يمكنك تحميل الملف النموذجي من: /backend/sample-courses.csv
-                    </p>
-                  </div>
-
-                  <div className="flex gap-3 justify-end">
-                    <button
-                      type="button"
-                      onClick={() => setShowUploadModal(false)}
-                      className="btn btn-secondary"
-                    >
-                      إلغاء
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleUploadCSV}
-                      disabled={!uploadFile}
-                      className="btn btn-primary disabled:opacity-50"
-                    >
-                      <ArrowUpTrayIcon className="w-5 h-5" />
-                      رفع الملف
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <div className="text-center py-8">
-                  {(uploadProgress.status === 'uploading' || uploadProgress.status === 'processing') && (
-                    <div className="space-y-4">
-                      <ArrowUpTrayIcon className="w-16 h-16 text-primary-600 mx-auto mb-4 animate-bounce" />
-                      <p className="text-lg font-medium text-slate-800">{uploadProgress.message}</p>
-                      
-                      {/* Progress Bar */}
-                      <div className="w-full max-w-md mx-auto">
-                        <div className="flex justify-between text-sm text-slate-600 mb-2">
-                          <span className="font-semibold">{uploadProgress.percent}%</span>
-                          {uploadProgress.estimatedTimeLeft !== undefined && uploadProgress.estimatedTimeLeft > 0 && (
-                            <span className="flex items-center gap-1">
-                              <ClockIcon className="w-4 h-4" />
-                              الوقت المتبقي: {uploadProgress.estimatedTimeLeft} ثانية
-                            </span>
-                          )}
-                        </div>
-                        <div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
-                          <motion.div
-                            className="bg-gradient-to-r from-primary-500 to-primary-600 h-full rounded-full shadow-sm"
-                            initial={{ width: 0 }}
-                            animate={{ width: `${uploadProgress.percent}%` }}
-                            transition={{ duration: 0.3, ease: 'easeInOut' }}
-                          />
-                        </div>
-                        
-                        {/* Status Messages */}
-                        <div className="mt-4 text-sm text-slate-500">
-                          {uploadProgress.status === 'uploading' && (
-                            <div className="space-y-1">
-                              <p className="font-medium text-slate-700">⬆️ جاري رفع الملف إلى السيرفر...</p>
-                              {uploadProgress.phase === 'upload' && (
-                                <p className="text-xs">يتم نقل الملف من جهازك إلى السيرفر</p>
-                              )}
-                            </div>
-                          )}
-                          {uploadProgress.status === 'processing' && (
-                            <div className="space-y-1">
-                              <p className="font-medium text-slate-700">⚙️ جاري معالجة البيانات وحفظها...</p>
-                              {uploadProgress.total && (
-                                <p className="text-xs">معالجة {uploadProgress.total} دورة وحفظها في قاعدة البيانات</p>
-                              )}
-                              <p className="text-xs text-slate-400">يتم المزامنة مع Neo4j تلقائياً</p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  {uploadProgress.status === 'completed' && (
-                    <div>
-                      <CheckCircleIcon className="w-16 h-16 text-green-600 mx-auto mb-4" />
-                      <p className="text-lg font-medium text-slate-800 mb-4">{uploadProgress.message}</p>
-                      
-                      {/* Progress Bar at 100% */}
-                      <div className="w-full max-w-md mx-auto mb-4">
-                        <div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
-                          <div className="bg-gradient-to-r from-green-500 to-green-600 h-full rounded-full w-full" />
-                        </div>
-                      </div>
-                      
-                      {uploadProgress.details && (
-                        <div className="bg-slate-50 rounded-lg p-4 text-right max-w-md mx-auto">
-                          <div className="grid grid-cols-2 gap-3 text-sm mb-3">
-                            <div className="bg-green-100 text-green-700 px-3 py-2 rounded">
-                              <div className="font-bold text-2xl">{uploadProgress.details.success}</div>
-                              <div className="text-xs">✅ نجح</div>
-                            </div>
-                            <div className="bg-red-100 text-red-700 px-3 py-2 rounded">
-                              <div className="font-bold text-2xl">{uploadProgress.details.failed}</div>
-                              <div className="text-xs">❌ فشل</div>
-                            </div>
-                          </div>
-                          {(uploadProgress.details.inserted > 0 || uploadProgress.details.updated > 0) && (
-                            <div className="grid grid-cols-2 gap-3 text-sm mb-3">
-                              <div className="bg-blue-100 text-blue-700 px-3 py-2 rounded">
-                                <div className="font-bold text-xl">{uploadProgress.details.inserted || 0}</div>
-                                <div className="text-xs">➕ جديد</div>
-                              </div>
-                              <div className="bg-amber-100 text-amber-700 px-3 py-2 rounded">
-                                <div className="font-bold text-xl">{uploadProgress.details.updated || 0}</div>
-                                <div className="text-xs">🔄 محدّث</div>
-                              </div>
-                            </div>
-                          )}
-                          <div className="pt-3 border-t border-slate-200">
-                            <p className="text-sm text-slate-600">
-                              📊 المجموع: {uploadProgress.details.total}
-                              {uploadProgress.totalTime && (
-                                <>
-                                  <br />
-                                  ⏱️ الوقت المستغرق: {uploadProgress.totalTime} ثانية
-                                </>
-                              )}
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {uploadProgress.status === 'error' && (
-                    <div>
-                      <XCircleIcon className="w-16 h-16 text-red-600 mx-auto mb-4" />
-                      <p className="text-lg font-medium text-slate-800 mb-2">{uploadProgress.message}</p>
-                      <p className="text-sm text-slate-500 mb-4">يرجى المحاولة مرة أخرى</p>
-                      <button
-                        onClick={() => {
-                          setUploadProgress(null);
-                          setUploadFile(null);
-                          setUploadStats(null);
-                        }}
-                        className="btn btn-primary mt-4"
-                      >
-                        إعادة المحاولة
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </Dialog.Panel>
-        </div>
-      </Dialog>
-
-      {/* Delete Confirmation Modal */}
+      {/* Admin: Delete Confirmation Modal */}
       <DeleteConfirmationModal
-        isOpen={showDeleteModal}
-        onClose={() => setShowDeleteModal(false)}
-        onConfirm={confirmDelete}
+        isOpen={deleteModalOpen}
+        onClose={() => {
+          setDeleteModalOpen(false);
+          setSelectedCourse(null);
+        }}
+        onConfirm={handleDeleteConfirm}
         title="حذف الدورة"
-        message={`هل أنت متأكد من حذف الدورة "${courseToDelete?.name_ar}"؟ سيتم حذفها من قاعدة البيانات ومن Neo4j.`}
+        message={`هل أنت متأكد من حذف الدورة "${selectedCourse?.name_ar}"؟\n\nسيتم حذف الدورة وجميع العلاقات المرتبطة بها من قاعدة بيانات Neo4j.\n\nلا يمكن التراجع عن هذا الإجراء.`}
+        confirmText={deleting ? 'جاري الحذف...' : 'حذف'}
+        cancelText="إلغاء"
       />
     </div>
   );

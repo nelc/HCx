@@ -50,6 +50,10 @@ export const getCVImportHistory = async () => {
   return await api.get('/cv-import/history');
 };
 
+export const deleteCVImport = async () => {
+  return await api.delete('/cv-import/delete');
+};
+
 // Users bulk upload API helper
 export const uploadUsersCSV = async (file) => {
   const formData = new FormData();

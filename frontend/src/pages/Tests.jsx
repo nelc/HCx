@@ -381,7 +381,7 @@ export default function Tests() {
         }}
         onConfirm={confirmDelete}
         title="تأكيد حذف التقييم"
-        message={testToDelete ? `هل أنت متأكد من حذف "${testToDelete.title_ar}"؟\n\nملاحظة: لا يمكن حذف التقييمات التي تحتوي على إجابات مكتملة.` : ''}
+        message={testToDelete ? `هل أنت متأكد من حذف "${testToDelete.title_ar}"؟` : ''}
       />
 
       {/* Assign Modal */}

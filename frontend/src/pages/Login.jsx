@@ -118,17 +118,6 @@ export default function Login() {
               )}
             </button>
           </form>
-
-          {/* Demo credentials */}
-          <div className="mt-8 p-4 bg-slate-50 rounded-xl border border-slate-100">
-            <p className="text-sm font-medium text-slate-600 mb-3">بيانات الدخول التجريبية:</p>
-            <div className="space-y-2 text-sm text-slate-500">
-              <p><span className="font-medium">مدير النظام:</span> admin@hrx.com</p>
-              <p><span className="font-medium">مسؤول التدريب:</span> training@hrx.com</p>
-              <p><span className="font-medium">موظف:</span> ahmed@hrx.com</p>
-              <p className="text-xs text-slate-400 mt-2">كلمة المرور: password123</p>
-            </div>
-          </div>
         </motion.div>
       </div>
 

@@ -1148,15 +1148,6 @@ router.post('/:id/close', authenticate, isTrainingOfficer, async (req, res) => {
 // Delete test
 router.delete('/:id', authenticate, isTrainingOfficer, async (req, res) => {
   try {
-    // Check if test has completed assignments
-    const completedCheck = await db.query(
-      'SELECT id FROM test_assignments WHERE test_id = $1 AND status = $2 LIMIT 1', 
-      [req.params.id, 'completed']
-    );
-    if (completedCheck.rows.length > 0) {
-      return res.status(400).json({ error: 'Cannot delete test with completed assignments' });
-    }
-    
     const result = await db.query('DELETE FROM tests WHERE id = $1 RETURNING id', [req.params.id]);
     
     if (result.rows.length === 0) {

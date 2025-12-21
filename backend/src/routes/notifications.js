@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../db');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, isAdmin, isTrainingOfficer } = require('../middleware/auth');
+const { sendPendingTestReminders, updateAllUserBadges, markExpiredAssignments, runAllJobs } = require('../services/scheduledJobs');
 
 const router = express.Router();
 
@@ -111,6 +112,130 @@ router.delete('/clear/read', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Clear notifications error:', error);
     res.status(500).json({ error: 'Failed to clear notifications' });
+  }
+});
+
+// ==========================================
+// ADMIN: Scheduled Jobs Management
+// ==========================================
+
+// Send test reminders for pending tests (7+ days)
+router.post('/admin/send-reminders', authenticate, isTrainingOfficer, async (req, res) => {
+  try {
+    console.log('📧 Admin triggered: Send pending test reminders');
+    const result = await sendPendingTestReminders();
+    res.json({
+      message: 'تم إرسال التذكيرات',
+      ...result
+    });
+  } catch (error) {
+    console.error('Send reminders error:', error);
+    res.status(500).json({ error: 'Failed to send reminders' });
+  }
+});
+
+// Update badges for all users
+router.post('/admin/update-badges', authenticate, isTrainingOfficer, async (req, res) => {
+  try {
+    console.log('🏅 Admin triggered: Update all user badges');
+    const result = await updateAllUserBadges();
+    res.json({
+      message: 'تم تحديث الأوسمة',
+      ...result
+    });
+  } catch (error) {
+    console.error('Update badges error:', error);
+    res.status(500).json({ error: 'Failed to update badges' });
+  }
+});
+
+// Mark expired assignments
+router.post('/admin/mark-expired', authenticate, isTrainingOfficer, async (req, res) => {
+  try {
+    console.log('⏰ Admin triggered: Mark expired assignments');
+    const result = await markExpiredAssignments();
+    res.json({
+      message: 'تم تحديث التقييمات المنتهية',
+      ...result
+    });
+  } catch (error) {
+    console.error('Mark expired error:', error);
+    res.status(500).json({ error: 'Failed to mark expired assignments' });
+  }
+});
+
+// Run all scheduled jobs
+router.post('/admin/run-all-jobs', authenticate, isTrainingOfficer, async (req, res) => {
+  try {
+    console.log('🚀 Admin triggered: Run all scheduled jobs');
+    const results = await runAllJobs();
+    res.json({
+      message: 'تم تنفيذ جميع المهام المجدولة',
+      results
+    });
+  } catch (error) {
+    console.error('Run all jobs error:', error);
+    res.status(500).json({ error: 'Failed to run scheduled jobs' });
+  }
+});
+
+// Get email notification statistics
+router.get('/admin/stats', authenticate, isTrainingOfficer, async (req, res) => {
+  try {
+    // Get pending tests awaiting reminders
+    const pendingReminders = await db.query(`
+      SELECT COUNT(*) as count
+      FROM test_assignments
+      WHERE status = 'pending'
+        AND created_at <= NOW() - INTERVAL '7 days'
+        AND (email_reminder_sent = false OR email_reminder_sent IS NULL)
+    `);
+
+    // Get badge statistics
+    const badgeStats = await db.query(`
+      SELECT 
+        badge_id,
+        COUNT(*) as active_count
+      FROM user_badges
+      WHERE status = 'active'
+      GROUP BY badge_id
+      ORDER BY active_count DESC
+    `);
+
+    // Get recent notification counts by type
+    const notificationStats = await db.query(`
+      SELECT 
+        type,
+        COUNT(*) as count,
+        COUNT(*) FILTER (WHERE is_read = false) as unread_count
+      FROM notifications
+      WHERE created_at >= NOW() - INTERVAL '30 days'
+      GROUP BY type
+      ORDER BY count DESC
+    `);
+
+    // Get email reminder history
+    const reminderHistory = await db.query(`
+      SELECT 
+        DATE(last_reminder_at) as date,
+        COUNT(*) as reminders_sent
+      FROM test_assignments
+      WHERE last_reminder_at IS NOT NULL
+        AND last_reminder_at >= NOW() - INTERVAL '30 days'
+      GROUP BY DATE(last_reminder_at)
+      ORDER BY date DESC
+      LIMIT 30
+    `);
+
+    res.json({
+      pending_reminders: parseInt(pendingReminders.rows[0]?.count || 0),
+      badge_distribution: badgeStats.rows,
+      notification_stats: notificationStats.rows,
+      reminder_history: reminderHistory.rows
+    });
+  } catch (error) {
+    console.error('Get notification stats error:', error);
+    res.status(500).json({ error: 'Failed to get notification stats' });
   }
 });
 

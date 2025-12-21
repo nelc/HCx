@@ -25,6 +25,8 @@ import Recommendations from './pages/Recommendations';
 import Settings from './pages/Settings';
 import ResultsOverview from './pages/ResultsOverview';
 import Courses from './pages/Courses';
+import AcceptInvitation from './pages/AcceptInvitation';
+import Reports from './pages/Reports';
 
 // Protected Route Component
 function ProtectedRoute({ children, allowedRoles }) {
@@ -120,6 +122,8 @@ function App() {
             isAuthenticated ? <Navigate to="/dashboard" replace /> : <Login />
           } />
           
+          <Route path="/accept-invitation/:token" element={<AcceptInvitation />} />
+          
           <Route path="/" element={
             <ProtectedRoute>
               <DashboardLayout />
@@ -134,7 +138,11 @@ function App() {
             <Route path="test-results/:assignmentId" element={<PageWrapper><TestResultsImmediate /></PageWrapper>} />
             <Route path="results/:id" element={<PageWrapper><ResultDetail /></PageWrapper>} />
             <Route path="competency-matrix" element={<PageWrapper><CompetencyMatrix /></PageWrapper>} />
-            <Route path="recommendations" element={<PageWrapper><Recommendations /></PageWrapper>} />
+            <Route path="recommendations" element={
+              <ProtectedRoute allowedRoles={['admin', 'employee']}>
+                <PageWrapper><Recommendations /></PageWrapper>
+              </ProtectedRoute>
+            } />
             
             {/* Training officer routes */}
             <Route path="tests" element={
@@ -160,7 +168,7 @@ function App() {
             
             {/* Admin routes */}
             <Route path="domains" element={
-              <ProtectedRoute allowedRoles={['admin']}>
+              <ProtectedRoute allowedRoles={['admin', 'training_officer']}>
                 <PageWrapper><Domains /></PageWrapper>
               </ProtectedRoute>
             } />
@@ -170,7 +178,7 @@ function App() {
               </ProtectedRoute>
             } />
             <Route path="departments" element={
-              <ProtectedRoute allowedRoles={['admin']}>
+              <ProtectedRoute allowedRoles={['admin', 'training_officer']}>
                 <PageWrapper><Departments /></PageWrapper>
               </ProtectedRoute>
             } />
@@ -182,6 +190,11 @@ function App() {
             <Route path="results-overview" element={
               <ProtectedRoute allowedRoles={['admin', 'training_officer']}>
                 <PageWrapper><ResultsOverview /></PageWrapper>
+              </ProtectedRoute>
+            } />
+            <Route path="reports" element={
+              <ProtectedRoute allowedRoles={['admin', 'training_officer']}>
+                <PageWrapper><Reports /></PageWrapper>
               </ProtectedRoute>
             } />
             <Route path="settings" element={<PageWrapper><Settings /></PageWrapper>} />

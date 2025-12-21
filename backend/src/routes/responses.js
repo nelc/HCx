@@ -3,6 +3,8 @@ const { body, validationResult } = require('express-validator');
 const db = require('../db');
 const { authenticate } = require('../middleware/auth');
 const { analyzeAssignment } = require('./analysis');
+const { sendTestResultsEmail } = require('../services/emailService');
+const { updateUserBadges } = require('../services/badgeService');
 
 const router = express.Router();
 
@@ -358,6 +360,38 @@ router.post('/submit/:assignmentId', authenticate, async (req, res) => {
       };
     });
     
+    // Send test results email notification
+    const testInfo = await db.query(`
+      SELECT t.title_ar, t.title_en, u.email, u.name_ar
+      FROM test_assignments ta
+      JOIN tests t ON ta.test_id = t.id
+      JOIN users u ON ta.user_id = u.id
+      WHERE ta.id = $1
+    `, [req.params.assignmentId]);
+    
+    if (testInfo.rows.length > 0) {
+      const test = testInfo.rows[0];
+      sendTestResultsEmail(test.email, test.name_ar, {
+        test_title_ar: test.title_ar,
+        test_title_en: test.title_en,
+        percentage: overallPercentage,
+        total_score: Math.round(totalScore * 10) / 10,
+        max_score: totalMaxScore
+      }).catch(err => console.error('Failed to send test results email:', err));
+    }
+
+    // Update user badges based on new assessment results
+    updateUserBadges(req.user.id)
+      .then(result => {
+        if (result.awarded?.length > 0) {
+          console.log(`Badges awarded to user ${req.user.id}:`, result.awarded);
+        }
+        if (result.revoked?.length > 0) {
+          console.log(`Badges revoked from user ${req.user.id}:`, result.revoked);
+        }
+      })
+      .catch(err => console.error('Failed to update user badges:', err));
+
     res.json({
       message: 'Test submitted successfully',
       score: {
@@ -374,6 +408,121 @@ router.post('/submit/:assignmentId', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Submit test error:', error);
     res.status(500).json({ error: 'Failed to submit test' });
+  }
+});
+
+// Admin/Training Officer grade open_text question
+router.patch('/:responseId/grade', authenticate, [
+  body('score').isFloat({ min: 0, max: 10 }),
+  body('percentage').isFloat({ min: 0, max: 100 })
+], async (req, res) => {
+  try {
+    // Only admin and training_officer can grade
+    if (req.user.role !== 'admin' && req.user.role !== 'training_officer') {
+      return res.status(403).json({ error: 'Only admins and training officers can grade open text questions' });
+    }
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { responseId } = req.params;
+    const { score, percentage } = req.body;
+
+    // Verify response exists and is for an open_text question, and get assignment_id
+    const responseCheck = await db.query(`
+      SELECT r.id, r.assignment_id, q.question_type
+      FROM responses r
+      JOIN questions q ON r.question_id = q.id
+      WHERE r.id = $1
+    `, [responseId]);
+
+    if (responseCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Response not found' });
+    }
+
+    if (responseCheck.rows[0].question_type !== 'open_text') {
+      return res.status(400).json({ error: 'Can only grade open text questions' });
+    }
+
+    const assignmentId = responseCheck.rows[0].assignment_id;
+
+    // Determine is_correct based on percentage (50%+ is considered acceptable)
+    const isCorrect = percentage >= 50;
+
+    // Update the response with the admin-assigned score
+    const result = await db.query(`
+      UPDATE responses
+      SET score = $1, is_correct = $2, updated_at = NOW()
+      WHERE id = $3
+      RETURNING *
+    `, [score, isCorrect, responseId]);
+
+    // Check if all open questions are now graded
+    const ungradedCheck = await db.query(`
+      SELECT COUNT(*) as ungraded_count
+      FROM responses r
+      JOIN questions q ON r.question_id = q.id
+      WHERE r.assignment_id = $1
+        AND q.question_type = 'open_text'
+        AND r.score IS NULL
+    `, [assignmentId]);
+
+    const ungradedCount = parseInt(ungradedCheck.rows[0]?.ungraded_count || 0);
+    let allGraded = ungradedCount === 0;
+    let newOverallScore = null;
+
+    // If all open questions are graded, recalculate and update the final grade
+    if (allGraded) {
+      // Calculate weighted score
+      const weightedScore = await db.query(`
+        SELECT 
+          SUM(
+            CASE 
+              WHEN q.question_type = 'open_text' THEN (COALESCE(r.score, 0) / 10.0) * COALESCE(q.weight, 1)
+              WHEN q.question_type = 'mcq' THEN 
+                CASE 
+                  WHEN q.options IS NOT NULL AND jsonb_array_length(q.options) > 0 THEN
+                    (COALESCE(r.score, 0) / GREATEST(
+                      (SELECT MAX((opt->>'score')::numeric) FROM jsonb_array_elements(q.options) AS opt),
+                      10
+                    )) * COALESCE(q.weight, 1)
+                  ELSE (COALESCE(r.score, 0) / 10.0) * COALESCE(q.weight, 1)
+                END
+              ELSE (COALESCE(r.score, 0) / 10.0) * COALESCE(q.weight, 1)
+            END
+          ) as weighted_correct,
+          SUM(COALESCE(q.weight, 1)) as total_weight
+        FROM responses r
+        JOIN questions q ON r.question_id = q.id
+        WHERE r.assignment_id = $1
+      `, [assignmentId]);
+
+      const scoreData = weightedScore.rows[0];
+      if (scoreData && parseFloat(scoreData.total_weight) > 0) {
+        newOverallScore = Math.round((parseFloat(scoreData.weighted_correct) / parseFloat(scoreData.total_weight)) * 100);
+        
+        // Update analysis_results with the new overall_score
+        await db.query(`
+          UPDATE analysis_results
+          SET overall_score = $1, analyzed_at = NOW()
+          WHERE assignment_id = $2
+        `, [newOverallScore, assignmentId]);
+      }
+    }
+
+    res.json({
+      message: 'Grade saved successfully',
+      response: result.rows[0],
+      percentage: percentage,
+      all_graded: allGraded,
+      new_overall_score: newOverallScore,
+      remaining_ungraded: ungradedCount
+    });
+  } catch (error) {
+    console.error('Grade response error:', error);
+    res.status(500).json({ error: 'Failed to save grade' });
   }
 });
 

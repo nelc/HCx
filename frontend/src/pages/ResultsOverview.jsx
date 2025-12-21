@@ -7,6 +7,8 @@ import {
   ChartBarIcon,
   EyeIcon,
   XMarkIcon,
+  ExclamationTriangleIcon,
+  CheckCircleIcon,
 } from '@heroicons/react/24/outline';
 import api from '../utils/api';
 import { formatDate } from '../utils/helpers';
@@ -133,14 +135,12 @@ export default function ResultsOverview() {
           <div className="card p-4">
             <p className="text-sm text-slate-500 mb-1">متوسط الدرجات</p>
             <p className="text-2xl font-bold text-slate-700">
-              {filteredResults.filter(r => r.grade !== null).length > 0
-                ? Math.round(
-                    filteredResults
-                      .filter(r => r.grade !== null)
-                      .reduce((sum, r) => sum + r.grade, 0) /
-                    filteredResults.filter(r => r.grade !== null).length
-                  )
-                : 0}%
+              {(() => {
+                const gradesOnly = filteredResults.filter(r => r.grade != null && typeof r.grade === 'number');
+                if (gradesOnly.length === 0) return '-';
+                const average = gradesOnly.reduce((sum, r) => sum + r.grade, 0) / gradesOnly.length;
+                return `${Math.round(average)}%`;
+              })()}
             </p>
           </div>
           <div className="card p-4">
@@ -306,15 +306,38 @@ export default function ResultsOverview() {
                       </span>
                     </td>
                     <td>
-                      <span className="text-slate-700">
-                        {result.test_name}
-                      </span>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-slate-700">
+                          {result.test_name}
+                        </span>
+                        {/* Needs Grading Tag - when there are ungraded open questions */}
+                        {result.needs_grading && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-xs font-medium w-fit">
+                            <ExclamationTriangleIcon className="w-3 h-3" />
+                            يحتاج تقييم ({result.ungraded_count} سؤال)
+                          </span>
+                        )}
+                        {/* Graded Tag - when all open questions have been graded */}
+                        {!result.needs_grading && result.total_open_questions > 0 && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-medium w-fit">
+                            <CheckCircleIcon className="w-3 h-3" />
+                            تم التقييم
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="text-center">
                       {result.grade !== null ? (
-                        <span className={`inline-flex items-center justify-center px-3 py-1 rounded-full font-semibold text-sm ${getGradeColor(result.grade)}`}>
-                          {result.grade}%
-                        </span>
+                        <div className="flex flex-col items-center gap-1">
+                          <span className={`inline-flex items-center justify-center px-3 py-1 rounded-full font-semibold text-sm ${getGradeColor(result.grade)}`}>
+                            {result.grade}%
+                          </span>
+                          {result.needs_grading && (
+                            <span className="text-xs text-amber-600">
+                              (غير نهائية)
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <span className="text-slate-400 text-sm">
                           قيد التحليل
@@ -329,11 +352,15 @@ export default function ResultsOverview() {
                     <td className="text-center">
                       {result.analysis_id ? (
                         <Link
-                          to={`/results/${result.analysis_id}`}
-                          className="inline-flex items-center gap-2 px-3 py-1.5 bg-primary-50 text-primary-700 rounded-lg hover:bg-primary-100 transition-colors text-sm font-medium"
+                          to={`/results/${result.analysis_id}?assignment_id=${result.assignment_id}`}
+                          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors text-sm font-medium ${
+                            result.needs_grading 
+                              ? 'bg-amber-50 text-amber-700 hover:bg-amber-100' 
+                              : 'bg-primary-50 text-primary-700 hover:bg-primary-100'
+                          }`}
                         >
                           <EyeIcon className="w-4 h-4" />
-                          <span>عرض النتائج</span>
+                          <span>{result.needs_grading ? 'تقييم الأسئلة' : 'عرض النتائج'}</span>
                         </Link>
                       ) : (
                         <span className="text-slate-400 text-sm">

@@ -8,12 +8,14 @@ import {
   BriefcaseIcon,
   ChevronDownIcon,
   DocumentArrowUpIcon,
+  TrashIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import api, { getCVImportHistory } from '../utils/api';
+import api, { getCVImportHistory, deleteCVImport } from '../utils/api';
 import useAuthStore from '../store/authStore';
 import { getRoleLabel } from '../utils/helpers';
 import CVImportModal from '../components/CVImportModal';
+import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
 
 // Static skills data organized by subjects
 const SKILLS_DATA = [
@@ -296,17 +298,33 @@ export default function Settings() {
     last_qualification_ar: '',
     last_qualification_en: '',
     willing_to_change_career: null,
+    desired_domains: [], // Array of domain IDs for career aspirations
   });
   const [expandedSubjects, setExpandedSubjects] = useState({});
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [domains, setDomains] = useState([]);
+  const [loadingDomains, setLoadingDomains] = useState(false);
 
-  // Fetch employee profile
+  // Fetch employee profile and domains
   useEffect(() => {
     if (user?.role === 'employee' && activeTab === 'employee-profile') {
       fetchEmployeeProfile();
+      fetchDomains();
     }
   }, [activeTab, user]);
+
+  const fetchDomains = async () => {
+    setLoadingDomains(true);
+    try {
+      const response = await api.get('/domains');
+      setDomains(response.data || []);
+    } catch (error) {
+      console.error('Failed to fetch domains:', error);
+    } finally {
+      setLoadingDomains(false);
+    }
+  };
 
   const fetchEmployeeProfile = async () => {
     setLoadingProfile(true);
@@ -320,6 +338,7 @@ export default function Settings() {
         last_qualification_ar: response.data.last_qualification_ar || '',
         last_qualification_en: response.data.last_qualification_en || '',
         willing_to_change_career: response.data.willing_to_change_career,
+        desired_domains: response.data.desired_domains || [],
       });
     } catch (error) {
       console.error('Failed to fetch profile:', error);
@@ -413,6 +432,8 @@ export default function Settings() {
   const [showCVModal, setShowCVModal] = useState(false);
   const [cvImportHistory, setCvImportHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [showDeleteCVModal, setShowDeleteCVModal] = useState(false);
+  const [deletingCV, setDeletingCV] = useState(false);
 
   // Fetch CV import history
   useEffect(() => {
@@ -435,6 +456,21 @@ export default function Settings() {
 
   const handleCVImportSuccess = () => {
     fetchCVImportHistory();
+  };
+
+  const handleDeleteCV = async () => {
+    setDeletingCV(true);
+    try {
+      const response = await deleteCVImport();
+      toast.success(response.data.message || 'تم حذف السيرة الذاتية والمهارات المرتبطة بها بنجاح');
+      setCvImportHistory([]);
+      setShowDeleteCVModal(false);
+    } catch (error) {
+      console.error('Failed to delete CV:', error);
+      toast.error(error.response?.data?.message || 'فشل في حذف السيرة الذاتية');
+    } finally {
+      setDeletingCV(false);
+    }
   };
 
   const tabs = [
@@ -559,6 +595,21 @@ export default function Settings() {
                     disabled
                   />
                 </div>
+              </div>
+
+              {/* National ID - Read Only */}
+              <div className="mt-6 p-4 bg-primary-50 border border-primary-200 rounded-xl">
+                <label className="label text-primary-700">رقم الهوية الوطنية (المعرّف الرئيسي)</label>
+                <input
+                  type="text"
+                  value={user?.national_id || 'غير محدد'}
+                  className="input bg-white"
+                  dir="ltr"
+                  disabled
+                />
+                <p className="text-xs text-primary-600 mt-2">
+                  هذا الرقم هو المعرّف الرئيسي الخاص بك ولا يمكن تغييره. للتعديل، يرجى التواصل مع مدير النظام.
+                </p>
               </div>
               
               <p className="text-sm text-slate-400 mt-6">
@@ -759,6 +810,118 @@ export default function Settings() {
                     </div>
                   </div>
 
+                  {/* Desired Domains - Career Aspirations */}
+                  <div>
+                    <label className="label">ما الأدوار الوظيفية التي تشعر أنها الأقرب لتطلعاتك المهنية القادمة؟</label>
+                    <p className="text-sm text-slate-500 mb-3">
+                      What roles do you wish to occupy in the future? (اختر المجالات التي ترغب في العمل بها مستقبلاً)
+                    </p>
+                    
+                    {loadingDomains ? (
+                      <div className="flex justify-center items-center py-6">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-700"></div>
+                      </div>
+                    ) : domains.length === 0 ? (
+                      <div className="text-center py-6 bg-slate-50 rounded-xl border border-slate-200">
+                        <p className="text-slate-500">لا توجد مجالات متاحة حالياً</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-[400px] overflow-y-auto p-4 bg-slate-50 rounded-xl border border-slate-200">
+                        {domains.map((domain) => {
+                          const isSelected = (employeeProfile.desired_domains || []).includes(domain.id);
+                          return (
+                            <label
+                              key={domain.id}
+                              className={`flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition-all ${
+                                isSelected
+                                  ? 'bg-primary-50 border-primary-400 shadow-sm'
+                                  : 'bg-white border-slate-200 hover:border-primary-300 hover:bg-slate-50'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => {
+                                  setEmployeeProfile(prev => {
+                                    const currentDomains = prev.desired_domains || [];
+                                    if (currentDomains.includes(domain.id)) {
+                                      return {
+                                        ...prev,
+                                        desired_domains: currentDomains.filter(id => id !== domain.id)
+                                      };
+                                    } else {
+                                      return {
+                                        ...prev,
+                                        desired_domains: [...currentDomains, domain.id]
+                                      };
+                                    }
+                                  });
+                                }}
+                                className="w-5 h-5 text-primary-600 rounded focus:ring-primary-500"
+                              />
+                              <div
+                                className="w-4 h-4 rounded-full flex-shrink-0"
+                                style={{ backgroundColor: domain.color || '#502390' }}
+                              />
+                              <div className="flex-1">
+                                <span className={`font-medium ${isSelected ? 'text-primary-700' : 'text-slate-800'}`}>
+                                  {domain.name_ar}
+                                </span>
+                                {domain.name_en && (
+                                  <span className="text-sm text-slate-500 mr-2">({domain.name_en})</span>
+                                )}
+                                {domain.description_ar && (
+                                  <p className="text-xs text-slate-500 mt-1 line-clamp-1">{domain.description_ar}</p>
+                                )}
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                    
+                    {(employeeProfile.desired_domains || []).length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-sm text-primary-600 font-medium mb-2">
+                          المجالات المختارة: {employeeProfile.desired_domains.length}
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {(employeeProfile.desired_domains || []).map(domainId => {
+                            const domain = domains.find(d => d.id === domainId);
+                            return domain ? (
+                              <span
+                                key={domainId}
+                                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm"
+                                style={{
+                                  backgroundColor: (domain.color || '#502390') + '20',
+                                  color: domain.color || '#502390'
+                                }}
+                              >
+                                <span
+                                  className="w-2 h-2 rounded-full"
+                                  style={{ backgroundColor: domain.color || '#502390' }}
+                                />
+                                {domain.name_ar}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEmployeeProfile(prev => ({
+                                      ...prev,
+                                      desired_domains: (prev.desired_domains || []).filter(id => id !== domainId)
+                                    }));
+                                  }}
+                                  className="hover:opacity-70 font-bold"
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ) : null;
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Submit Button */}
                   <div className="flex items-center gap-4 pt-4 border-t">
                     <button
@@ -805,7 +968,18 @@ export default function Settings() {
 
                 {/* Import History */}
                 <div>
-                  <h3 className="font-semibold text-slate-800 mb-4">سجل الاستيراد</h3>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-semibold text-slate-800">سجل الاستيراد</h3>
+                    {cvImportHistory.length > 0 && (
+                      <button
+                        onClick={() => setShowDeleteCVModal(true)}
+                        className="flex items-center gap-2 px-3 py-1.5 text-sm text-danger-600 hover:text-danger-700 hover:bg-danger-50 rounded-lg transition-colors"
+                      >
+                        <TrashIcon className="w-4 h-4" />
+                        حذف السيرة الذاتية
+                      </button>
+                    )}
+                  </div>
                   {loadingHistory ? (
                     <div className="text-center py-8">
                       <div className="w-8 h-8 border-2 border-primary-200 border-t-primary-600 rounded-full animate-spin mx-auto mb-2"></div>
@@ -918,6 +1092,17 @@ export default function Settings() {
         isOpen={showCVModal}
         onClose={() => setShowCVModal(false)}
         onSuccess={handleCVImportSuccess}
+      />
+
+      {/* Delete CV Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={showDeleteCVModal}
+        onClose={() => setShowDeleteCVModal(false)}
+        onConfirm={handleDeleteCV}
+        title="حذف السيرة الذاتية"
+        message="هل أنت متأكد من حذف السيرة الذاتية؟ سيتم حذف جميع المهارات والخبرات والشهادات المستوردة من السيرة الذاتية. لا يمكن التراجع عن هذا الإجراء."
+        confirmText={deletingCV ? 'جاري الحذف...' : 'حذف'}
+        cancelText="إلغاء"
       />
     </div>
   );

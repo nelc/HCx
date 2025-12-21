@@ -3,6 +3,9 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 
+// Import admin initialization
+const { initializeAdmin } = require('./db/initAdmin');
+
 // Import routes
 const authRoutes = require('./routes/auth');
 const usersRoutes = require('./routes/users');
@@ -20,6 +23,7 @@ const notificationsRoutes = require('./routes/notifications');
 const cvImportRoutes = require('./routes/cvImport');
 const resultsOverviewRoutes = require('./routes/results-overview');
 const coursesRoutes = require('./routes/courses');
+const invitationsRoutes = require('./routes/invitations');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -31,6 +35,9 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Serve uploaded files (certificates, etc.)
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // API Routes
 app.use('/api/auth', authRoutes);
@@ -49,6 +56,7 @@ app.use('/api/notifications', notificationsRoutes);
 app.use('/api/cv-import', cvImportRoutes);
 app.use('/api/results-overview', resultsOverviewRoutes);
 app.use('/api/courses', coursesRoutes);
+app.use('/api/invitations', invitationsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -74,7 +82,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`
   🚀 HCx Server running on port ${PORT}
   
@@ -95,7 +103,11 @@ app.listen(PORT, () => {
      - CV Import:      /api/cv-import
      - Results Overview:/api/results-overview
      - Courses:        /api/courses
+     - Invitations:    /api/invitations
      - Health:         /api/health
   `);
+  
+  // Initialize default admin user on startup
+  await initializeAdmin();
 });
 

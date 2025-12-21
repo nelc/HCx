@@ -1,21 +1,25 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   CheckCircleIcon,
   ArrowRightIcon,
   ScaleIcon,
   ChartBarIcon,
-  SparklesIcon,
+  ChatBubbleBottomCenterTextIcon,
 } from '@heroicons/react/24/outline';
 import api from '../utils/api';
+import useAuthStore from '../store/authStore';
 import { formatDate } from '../utils/helpers';
 
 export default function TestResultsImmediate() {
   const { assignmentId } = useParams();
-  const navigate = useNavigate();
+  const { user } = useAuthStore();
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [userCategory, setUserCategory] = useState(null);
+  const [gradingScores, setGradingScores] = useState({});
+  const [savingGrade, setSavingGrade] = useState({});
 
   useEffect(() => {
     fetchResults();
@@ -56,10 +60,12 @@ export default function TestResultsImmediate() {
         totalWeightedMaxScore += weightedMaxScore;
 
         breakdown.push({
+          response_id: response.id,
           question_number: index + 1,
           question_ar: response.question_ar,
           question_type: response.question_type,
           skill_name: response.skill_name_ar,
+          response_value: response.response_value,
           weight,
           raw_score: rawScore,
           max_score: maxScore,
@@ -74,6 +80,10 @@ export default function TestResultsImmediate() {
         ? Math.round((totalWeightedScore / totalWeightedMaxScore) * 100)
         : 0;
 
+      // Determine user category based on score
+      const category = getCategoryFromScore(finalPercentage);
+      setUserCategory(category);
+
       setResult({
         assignment,
         totalWeightedScore: Math.round(totalWeightedScore * 10) / 10,
@@ -87,6 +97,61 @@ export default function TestResultsImmediate() {
       console.error('Failed to fetch results:', error);
     } finally {
       setLoading(false);
+    }
+  };
+  
+  // Get user category based on score
+  const getCategoryFromScore = (score) => {
+    if (score >= 70) {
+      return {
+        key: 'advanced',
+        label_ar: 'متقدم',
+        label_en: 'Advanced',
+        description_ar: 'أداء ممتاز! أنت تمتلك مهارات قوية في هذا المجال',
+        description_en: 'Excellent performance, can specialize further',
+        color: '#10B981',
+        bgColor: '#D1FAE5',
+        textColor: '#065F46'
+      };
+    } else if (score >= 40) {
+      return {
+        key: 'intermediate',
+        label_ar: 'متوسط',
+        label_en: 'Intermediate',
+        description_ar: 'أداء جيد مع وجود فرص للتحسين',
+        description_en: 'Good foundation, can develop further',
+        color: '#F59E0B',
+        bgColor: '#FEF3C7',
+        textColor: '#92400E'
+      };
+    } else {
+      return {
+        key: 'beginner',
+        label_ar: 'مبتدئ',
+        label_en: 'Beginner',
+        description_ar: 'هناك حاجة لتطوير المهارات في هذا المجال',
+        description_en: 'Needs strong foundation in this area',
+        color: '#EF4444',
+        bgColor: '#FEE2E2',
+        textColor: '#991B1B'
+      };
+    }
+  };
+
+  // Handle admin grading for open_text questions
+  const handleGradeOpenText = async (responseId, percentage) => {
+    try {
+      setSavingGrade(prev => ({ ...prev, [responseId]: true }));
+      const score = (parseFloat(percentage) / 100) * 10; // Convert percentage to 0-10 scale
+      await api.patch(`/responses/${responseId}/grade`, { score, percentage: parseFloat(percentage) });
+      
+      // Refresh results to recalculate totals
+      await fetchResults();
+      setGradingScores(prev => ({ ...prev, [responseId]: undefined }));
+    } catch (error) {
+      console.error('Failed to save grade:', error);
+    } finally {
+      setSavingGrade(prev => ({ ...prev, [responseId]: false }));
     }
   };
 
@@ -186,13 +251,26 @@ export default function TestResultsImmediate() {
             {result.assignment?.domain_name_ar} • {formatDate(new Date())}
           </p>
 
-          <div className={`inline-block px-6 py-3 rounded-xl text-${scoreColor}-800 bg-${scoreColor}-100 font-medium`}>
-            {result.finalPercentage >= 70
-              ? 'أداء ممتاز! أنت تمتلك مهارات قوية في هذا المجال'
-              : result.finalPercentage >= 40
-              ? 'أداء جيد مع وجود فرص للتحسين'
-              : 'هناك حاجة لتطوير المهارات في هذا المجال'}
-          </div>
+          {/* User Category Badge */}
+          {userCategory && (
+            <div className="flex flex-col items-center gap-3">
+              <div 
+                className="inline-flex items-center gap-3 px-6 py-3 rounded-xl font-medium"
+                style={{ backgroundColor: userCategory.bgColor, color: userCategory.textColor }}
+              >
+                <div 
+                  className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold"
+                  style={{ backgroundColor: userCategory.color }}
+                >
+                  {result.finalPercentage}%
+                </div>
+                <div className="text-right">
+                  <div className="text-lg font-bold">تصنيفك: {userCategory.label_ar}</div>
+                  <div className="text-sm opacity-80">{userCategory.description_ar}</div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </motion.div>
 
@@ -285,6 +363,45 @@ export default function TestResultsImmediate() {
                     </span>
                   )}
 
+                  {/* Show open text answer */}
+                  {q.question_type === 'open_text' && q.response_value && (
+                    <div className="mb-3 p-3 bg-blue-50 rounded-lg border border-blue-100">
+                      <div className="flex items-center gap-2 mb-2">
+                        <ChatBubbleBottomCenterTextIcon className="w-4 h-4 text-blue-600" />
+                        <span className="text-xs font-medium text-blue-700">إجابة الموظف:</span>
+                      </div>
+                      <p className="text-sm text-slate-700 whitespace-pre-wrap">{q.response_value}</p>
+                    </div>
+                  )}
+
+                  {/* Admin grading for open_text questions */}
+                  {q.question_type === 'open_text' && user?.role === 'admin' && (
+                    <div className="mb-3 p-3 bg-amber-50 rounded-lg border border-amber-200">
+                      <div className="flex items-center gap-3">
+                        <label className="text-sm font-medium text-amber-800">تقييم المدير:</label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            placeholder={q.percentage > 0 ? q.percentage : "0-100"}
+                            value={gradingScores[q.response_id] ?? (q.percentage > 0 ? q.percentage : '')}
+                            onChange={(e) => setGradingScores(prev => ({ ...prev, [q.response_id]: e.target.value }))}
+                            className="w-20 px-2 py-1 text-sm border border-amber-300 rounded focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                          />
+                          <span className="text-sm text-amber-700">%</span>
+                          <button
+                            onClick={() => handleGradeOpenText(q.response_id, gradingScores[q.response_id] ?? q.percentage)}
+                            disabled={savingGrade[q.response_id] || !gradingScores[q.response_id]}
+                            className="px-3 py-1 text-sm bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {savingGrade[q.response_id] ? 'جاري الحفظ...' : 'حفظ'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
                     <div className="p-2 bg-white rounded border border-slate-200">
                       <span className="text-slate-500">الوزن:</span>
@@ -320,17 +437,11 @@ export default function TestResultsImmediate() {
         initial={{ y: 20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ delay: 0.4 }}
-        className="flex flex-col sm:flex-row gap-4"
+        className="flex justify-center"
       >
         <Link
-          to={`/results/${assignmentId}`}
-          className="btn btn-primary flex-1 justify-center"
-        >
-          عرض التحليل الكامل والتوصيات
-        </Link>
-        <Link
           to="/my-results"
-          className="btn btn-secondary flex-1 justify-center"
+          className="btn btn-primary px-8"
         >
           عرض جميع نتائجي
         </Link>
