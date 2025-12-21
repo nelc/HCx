@@ -375,8 +375,8 @@ function PerformanceSummary({ stats, leaderboardData }) {
 function SkillsRadarChart({ skills }) {
   if (!skills || skills.length < 3) return null;
 
-  // Take top 8 skills for radar chart, sorted by most recent assessment
-  const topSkills = skills.slice(0, 8);
+  // Show all skills in radar chart (no limit)
+  const topSkills = skills;
   
   const chartData = {
     labels: topSkills.map(s => s.skill_name_ar || 'مهارة'),
@@ -701,17 +701,20 @@ function EmployeeDashboard() {
     });
 
   const skillChartData = {
-    labels: validSkills.slice(0, 6).map(s => s.skill_name_ar || 'مهارة'),
+    labels: validSkills.map(s => s.skill_name_ar || 'مهارة'),
     datasets: [{
-      data: validSkills.slice(0, 6).map(s => s.last_assessment_score || 0),
-      backgroundColor: [
-        'rgba(80, 35, 144, 0.8)',
-        'rgba(69, 119, 175, 0.8)',
-        'rgba(99, 148, 197, 0.8)',
-        'rgba(147, 183, 217, 0.8)',
-        'rgba(189, 211, 233, 0.8)',
-        'rgba(240, 245, 250, 0.8)',
-      ],
+      data: validSkills.map(s => s.last_assessment_score || 0),
+      backgroundColor: validSkills.map((_, i) => {
+        const colors = [
+          'rgba(80, 35, 144, 0.8)',
+          'rgba(69, 119, 175, 0.8)',
+          'rgba(99, 148, 197, 0.8)',
+          'rgba(147, 183, 217, 0.8)',
+          'rgba(189, 211, 233, 0.8)',
+          'rgba(165, 180, 195, 0.8)',
+        ];
+        return colors[i % colors.length];
+      }),
       borderWidth: 0,
     }],
   };
@@ -753,9 +756,9 @@ function EmployeeDashboard() {
       <PerformanceSummary stats={stats} leaderboardData={leaderboardData} />
 
       {/* Main Content Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column - Pending Assessments */}
-        <div className="lg:col-span-2 space-y-6">
+      <div className="space-y-6">
+        {/* Pending Assessments & Recent Results */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Pending Assessments */}
           <div className="card">
             <div className="p-6 border-b border-slate-100 flex items-center justify-between">
@@ -891,39 +894,40 @@ function EmployeeDashboard() {
           </div>
         </div>
 
-        {/* Right Column - Skills & Charts */}
-        <div className="space-y-6">
+        {/* Skills Charts - Full Width Below */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Skill Profile Chart */}
           <div className="card p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-primary-700">ملف المهارات</h2>
+              <h2 className="text-xl font-semibold text-primary-700">ملف المهارات</h2>
               {validSkills.length > 0 && (
-                <span className="text-xs text-slate-500">
+                <span className="text-sm text-slate-500">
                   {validSkills.length} مهارة مقيّمة
                 </span>
               )}
             </div>
             {validSkills.length > 0 ? (
-              <div className="min-h-[280px]">
+              <div style={{ minHeight: Math.max(400, validSkills.length * 45) + 'px' }}>
                 <Bar 
                   data={{
-                    labels: validSkills.slice(0, 6).map(s => {
+                    labels: validSkills.map(s => {
                       // Add trend indicator to label
                       const trendIcon = s.trend === 'improving' ? ' ↑' : s.trend === 'declining' ? ' ↓' : '';
                       return (s.skill_name_ar || 'مهارة') + trendIcon;
                     }),
                     datasets: [{
                       label: 'مستوى المهارة',
-                      data: validSkills.slice(0, 6).map(s => s.last_assessment_score || 0),
-                      backgroundColor: validSkills.slice(0, 6).map(s => {
+                      data: validSkills.map(s => s.last_assessment_score || 0),
+                      backgroundColor: validSkills.map(s => {
                         const score = s.last_assessment_score || 0;
                         if (score >= 80) return 'rgba(34, 197, 94, 0.85)';
                         if (score >= 60) return 'rgba(80, 35, 144, 0.85)';
                         if (score >= 40) return 'rgba(237, 122, 30, 0.85)';
                         return 'rgba(239, 68, 68, 0.85)';
                       }),
-                      borderRadius: 6,
+                      borderRadius: 8,
                       borderSkipped: false,
+                      barThickness: 28,
                     }],
                   }}
                   options={{
@@ -961,7 +965,7 @@ function EmployeeDashboard() {
                           color: 'rgba(0, 0, 0, 0.05)',
                         },
                         ticks: {
-                          font: { family: 'IBM Plex Sans Arabic', size: 11 },
+                          font: { family: 'IBM Plex Sans Arabic', size: 12 },
                           callback: function(value) {
                             return value + '%';
                           }
@@ -972,7 +976,7 @@ function EmployeeDashboard() {
                           display: false,
                         },
                         ticks: {
-                          font: { family: 'IBM Plex Sans Arabic', size: 12 },
+                          font: { family: 'IBM Plex Sans Arabic', size: 14 },
                           color: '#334155',
                         }
                       }
@@ -981,10 +985,10 @@ function EmployeeDashboard() {
                 />
               </div>
             ) : (
-              <div className="min-h-[280px] flex items-center justify-center text-slate-400">
+              <div className="min-h-[400px] flex items-center justify-center text-slate-400">
                 <div className="text-center">
-                  <ChartBarIcon className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-                  <p>لا توجد بيانات بعد</p>
+                  <ChartBarIcon className="w-16 h-16 mx-auto mb-3 text-slate-300" />
+                  <p className="text-lg">لا توجد بيانات بعد</p>
                   <p className="text-sm mt-1">أكمل تقييمك الأول لعرض مهاراتك</p>
                 </div>
               </div>
@@ -992,9 +996,85 @@ function EmployeeDashboard() {
           </div>
 
           {/* Skills Radar Chart */}
-          {validSkills.length >= 3 && (
-            <SkillsRadarChart skills={validSkills} />
-          )}
+          <div className="card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold text-primary-700">خريطة المهارات</h2>
+              <div className="flex items-center gap-4 text-sm">
+                <span className="flex items-center gap-1">
+                  <span className="w-3 h-3 rounded-full bg-green-500"></span>
+                  تحسن
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="w-3 h-3 rounded-full bg-red-500"></span>
+                  تراجع
+                </span>
+              </div>
+            </div>
+            {validSkills.length >= 3 ? (
+              <div className="h-[400px]">
+                <Radar
+                  data={{
+                    labels: validSkills.map(s => s.skill_name_ar || 'مهارة'),
+                    datasets: [{
+                      label: 'مستوى المهارة',
+                      data: validSkills.map(s => s.last_assessment_score || 0),
+                      backgroundColor: 'rgba(80, 35, 144, 0.2)',
+                      borderColor: 'rgba(80, 35, 144, 0.8)',
+                      borderWidth: 2,
+                      pointBackgroundColor: validSkills.map(s => {
+                        if (s.trend === 'improving') return 'rgba(34, 197, 94, 1)';
+                        if (s.trend === 'declining') return 'rgba(239, 68, 68, 1)';
+                        return 'rgba(80, 35, 144, 1)';
+                      }),
+                      pointBorderColor: '#fff',
+                      pointHoverBackgroundColor: '#fff',
+                      pointHoverBorderColor: 'rgba(80, 35, 144, 1)',
+                      pointRadius: 6,
+                    }],
+                  }}
+                  options={{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                      legend: { display: false },
+                      tooltip: { 
+                        rtl: true,
+                        callbacks: {
+                          label: function(context) {
+                            const skill = validSkills[context.dataIndex];
+                            const trend = skill?.trend === 'improving' ? '(تحسن ↑)' : 
+                                          skill?.trend === 'declining' ? '(تراجع ↓)' : '';
+                            return `${context.parsed.r}% ${trend}`;
+                          }
+                        }
+                      }
+                    },
+                    scales: {
+                      r: {
+                        beginAtZero: true,
+                        max: 100,
+                        ticks: {
+                          stepSize: 20,
+                          font: { size: 11 }
+                        },
+                        pointLabels: {
+                          font: { family: 'IBM Plex Sans Arabic', size: 12 },
+                        }
+                      }
+                    }
+                  }}
+                />
+              </div>
+            ) : (
+              <div className="h-[400px] flex items-center justify-center text-slate-400">
+                <div className="text-center">
+                  <ChartBarIcon className="w-16 h-16 mx-auto mb-3 text-slate-300" />
+                  <p className="text-lg">لا توجد بيانات كافية</p>
+                  <p className="text-sm mt-1">يلزم 3 مهارات على الأقل لعرض الخريطة</p>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

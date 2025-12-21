@@ -57,6 +57,9 @@ function MedalIcon({ rank, size = 'md' }) {
 function LeaderboardEntry({ entry, currentUserId, showDepartment = false }) {
   const isCurrentUser = entry.user_id === currentUserId || entry.is_current_user;
   
+  // Show anonymized name for other employees
+  const displayName = isCurrentUser ? entry.name_ar : `موظف ${entry.rank}`;
+  
   return (
     <motion.div
       initial={{ opacity: 0, x: -10 }}
@@ -72,7 +75,7 @@ function LeaderboardEntry({ entry, currentUserId, showDepartment = false }) {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <p className={`font-semibold truncate ${isCurrentUser ? 'text-primary-700' : 'text-slate-800'}`}>
-            {entry.name_ar}
+            {displayName}
             {isCurrentUser && (
               <span className="mr-2 text-xs bg-primary-200 text-primary-700 px-2 py-0.5 rounded-full">
                 أنت
@@ -80,10 +83,11 @@ function LeaderboardEntry({ entry, currentUserId, showDepartment = false }) {
             )}
           </p>
         </div>
-        {showDepartment && entry.department_name_ar && (
+        {/* Only show department/job info for current user */}
+        {isCurrentUser && showDepartment && entry.department_name_ar && (
           <p className="text-xs text-slate-500 truncate">{entry.department_name_ar}</p>
         )}
-        {entry.job_title_ar && !showDepartment && (
+        {isCurrentUser && entry.job_title_ar && !showDepartment && (
           <p className="text-xs text-slate-500 truncate">{entry.job_title_ar}</p>
         )}
       </div>
@@ -160,29 +164,34 @@ function DomainLeaderboard({ domain, currentUserId }) {
       </div>
       
       <div className="space-y-2">
-        {domain.leaders.slice(0, 3).map((leader, idx) => (
-          <div 
-            key={leader.user_id}
-            className={`flex items-center gap-2 p-2 rounded-lg ${
-              leader.is_current_user ? 'bg-primary-100 border border-primary-200' : 'bg-white'
-            }`}
-          >
-            <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold ${
-              idx === 0 ? 'bg-yellow-100 text-yellow-700' :
-              idx === 1 ? 'bg-slate-100 text-slate-600' :
-              'bg-amber-100 text-amber-700'
-            }`}>
-              {idx + 1}
-            </span>
-            <span className={`flex-1 text-sm truncate ${leader.is_current_user ? 'font-semibold text-primary-700' : 'text-slate-700'}`}>
-              {leader.name_ar}
-              {leader.is_current_user && <span className="text-xs mr-1">(أنت)</span>}
-            </span>
-            <span className="text-sm font-bold" style={{ color: domain.domain_color }}>
-              {leader.avg_score}%
-            </span>
-          </div>
-        ))}
+        {domain.leaders.slice(0, 3).map((leader, idx) => {
+          // Show anonymized name for other employees
+          const displayName = leader.is_current_user ? leader.name_ar : `موظف ${idx + 1}`;
+          
+          return (
+            <div 
+              key={leader.user_id}
+              className={`flex items-center gap-2 p-2 rounded-lg ${
+                leader.is_current_user ? 'bg-primary-100 border border-primary-200' : 'bg-white'
+              }`}
+            >
+              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold ${
+                idx === 0 ? 'bg-yellow-100 text-yellow-700' :
+                idx === 1 ? 'bg-slate-100 text-slate-600' :
+                'bg-amber-100 text-amber-700'
+              }`}>
+                {idx + 1}
+              </span>
+              <span className={`flex-1 text-sm truncate ${leader.is_current_user ? 'font-semibold text-primary-700' : 'text-slate-700'}`}>
+                {displayName}
+                {leader.is_current_user && <span className="text-xs mr-1">(أنت)</span>}
+              </span>
+              <span className="text-sm font-bold" style={{ color: domain.domain_color }}>
+                {leader.avg_score}%
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

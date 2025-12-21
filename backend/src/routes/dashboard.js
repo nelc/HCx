@@ -240,22 +240,13 @@ router.get('/employee', authenticate, async (req, res) => {
       ORDER BY ta.due_date ASC NULLS LAST
     `, [userId]);
     
-    // My skill profile (assessed skills) - Updated to always return fresh, accurate data
-    // Includes improvement trend and last assessment date for better tracking
-    const skillProfile = await db.query(`
-      SELECT 
-        esp.id,
-        esp.user_id,
-        esp.skill_id,
-        esp.current_level,
-        esp.target_level,
-        esp.last_assessment_score,
-        esp.last_assessment_date,
-        esp.improvement_trend,
-        esp.confidence_score,
-        esp.source,
-        esp.created_at,
-        esp.updated_at,
+    // My skill profile (assessed skills) - Get ALL skills from completed tests
+    // This approach ensures we show all assessed skills, not just those in employee_skill_profiles
+    
+    // Step 1: Get all skills that have been assessed in completed tests
+    const assessedSkillsResult = await db.query(`
+      SELECT DISTINCT
+        s.id as skill_id,
         s.name_ar as skill_name_ar,
         s.name_en as skill_name_en,
         s.description_ar as skill_description_ar,
@@ -265,14 +256,124 @@ router.get('/employee', authenticate, async (req, res) => {
         td.name_ar as domain_name_ar,
         td.name_en as domain_name_en,
         td.color as domain_color
-      FROM employee_skill_profiles esp
-      JOIN skills s ON esp.skill_id = s.id
+      FROM test_skills ts
+      JOIN skills s ON ts.skill_id = s.id
       JOIN training_domains td ON s.domain_id = td.id
-      WHERE esp.user_id = $1 
-        AND esp.last_assessment_score IS NOT NULL 
-        AND esp.last_assessment_score > 0
-      ORDER BY esp.last_assessment_date DESC NULLS LAST, esp.last_assessment_score DESC
+      WHERE ts.test_id IN (
+        SELECT DISTINCT ta.test_id 
+        FROM test_assignments ta 
+        WHERE ta.user_id = $1 AND ta.status = 'completed'
+      )
+      AND td.is_active = true
+      ORDER BY td.name_ar, s.name_ar
     `, [userId]);
+    
+    // Step 2: Get analysis results to calculate actual scores (same approach as CompetencyMatrix)
+    const analysesResult = await db.query(`
+      SELECT 
+        ar.id,
+        ar.test_id,
+        ar.assignment_id,
+        ar.analyzed_at,
+        ar.overall_score
+      FROM analysis_results ar
+      WHERE ar.user_id = $1
+      ORDER BY ar.analyzed_at DESC
+    `, [userId]);
+    
+    // Step 3: Calculate actual scores per skill from responses (same logic as CompetencyMatrix)
+    const skillScoresMap = {};
+    
+    for (const analysis of analysesResult.rows) {
+      // Get the test's target skills
+      const testSkillsResult = await db.query(`
+        SELECT s.id as skill_id
+        FROM test_skills ts
+        JOIN skills s ON ts.skill_id = s.id
+        WHERE ts.test_id = $1
+      `, [analysis.test_id]);
+      
+      if (testSkillsResult.rows.length === 0) continue;
+      
+      // Calculate actual grade from responses using assignment_id directly (same as CompetencyMatrix)
+      const responsesData = await db.query(`
+        SELECT r.score, q.question_type, q.options, q.weight
+        FROM responses r
+        JOIN questions q ON r.question_id = q.id
+        WHERE r.assignment_id = $1
+      `, [analysis.assignment_id]);
+      
+      if (responsesData.rows.length === 0) continue;
+      
+      // Calculate actual percentage - SAME LOGIC AS COMPETENCY MATRIX
+      let totalScore = 0;
+      let totalMaxScore = 0;
+      
+      for (const response of responsesData.rows) {
+        let maxScore = 10; // Default max score
+        
+        // For MCQ, get max score from options
+        if (response.question_type === 'mcq' && response.options && Array.isArray(response.options) && response.options.length > 0) {
+          const optionScores = response.options.map(o => parseFloat(o.score) || 0);
+          maxScore = Math.max(...optionScores, 10);
+        } else if (response.question_type === 'likert_scale' || response.question_type === 'self_rating') {
+          maxScore = 10;
+        } else if (response.question_type === 'open_text') {
+          maxScore = 10;
+        }
+        
+        const weight = parseFloat(response.weight) || 1;
+        const score = parseFloat(response.score) || 0;
+        
+        totalScore += score * weight;
+        totalMaxScore += maxScore * weight;
+      }
+      
+      const actualScore = totalMaxScore > 0 ? Math.round((totalScore / totalMaxScore) * 100) : 0;
+      
+      // Apply score to all target skills
+      for (const skillRow of testSkillsResult.rows) {
+        const skillId = skillRow.skill_id;
+        if (!skillScoresMap[skillId]) {
+          skillScoresMap[skillId] = {
+            scores: [],
+            dates: []
+          };
+        }
+        skillScoresMap[skillId].scores.push(actualScore);
+        skillScoresMap[skillId].dates.push(analysis.analyzed_at);
+      }
+    }
+    
+    // Step 4: Build skill profile with calculated scores and trends
+    const skillProfile = { rows: assessedSkillsResult.rows.map(skill => {
+      const scoreData = skillScoresMap[skill.skill_id];
+      if (!scoreData || scoreData.scores.length === 0) {
+        return null; // Skip skills with no actual scores
+      }
+      
+      // Get average score (most recent tests weighted more)
+      const avgScore = Math.round(
+        scoreData.scores.reduce((a, b) => a + b, 0) / scoreData.scores.length
+      );
+      
+      // Calculate improvement trend
+      let trend = 'stable';
+      if (scoreData.scores.length >= 2) {
+        const recent = scoreData.scores[0];
+        const older = scoreData.scores[scoreData.scores.length - 1];
+        if (recent > older + 5) trend = 'improving';
+        else if (recent < older - 5) trend = 'declining';
+      }
+      
+      return {
+        ...skill,
+        last_assessment_score: avgScore,
+        last_assessment_date: scoreData.dates[0],
+        improvement_trend: trend,
+        current_level: avgScore >= 80 ? 'متقدم' : avgScore >= 60 ? 'متوسط' : avgScore >= 40 ? 'مبتدئ' : 'أساسي'
+      };
+    }).filter(s => s !== null) };
     
     // Department-linked skills (all skills from domains linked to employee's department)
     const departmentSkills = await db.query(`
@@ -1222,52 +1323,146 @@ router.get('/employee/leaderboard', authenticate, async (req, res) => {
     `);
 
     // 4. USER ACHIEVEMENTS & STATS
-    // Calculate user achievements
-    const userStats = await db.query(`
+    // Calculate user achievements with RECALCULATED scores (same logic as dashboard skill profile)
+    
+    // Get all analysis results to recalculate scores
+    const allAnalysesResult = await db.query(`
+      SELECT ar.id, ar.test_id, ar.assignment_id, ar.analyzed_at
+      FROM analysis_results ar
+      WHERE ar.user_id = $1
+      ORDER BY ar.analyzed_at DESC
+    `, [userId]);
+    
+    // Recalculate all scores from responses (same formula as CompetencyMatrix)
+    const recalculatedScores = [];
+    const skillScoresForAchievements = {};
+    
+    for (const analysis of allAnalysesResult.rows) {
+      // Get responses for this assignment
+      const responsesData = await db.query(`
+        SELECT r.score, q.question_type, q.options, q.weight
+        FROM responses r
+        JOIN questions q ON r.question_id = q.id
+        WHERE r.assignment_id = $1
+      `, [analysis.assignment_id]);
+      
+      if (responsesData.rows.length === 0) continue;
+      
+      // Calculate actual score - SAME LOGIC AS COMPETENCY MATRIX
+      let totalScore = 0;
+      let totalMaxScore = 0;
+      
+      for (const response of responsesData.rows) {
+        let maxScore = 10;
+        if (response.question_type === 'mcq' && response.options && Array.isArray(response.options) && response.options.length > 0) {
+          const optionScores = response.options.map(o => parseFloat(o.score) || 0);
+          maxScore = Math.max(...optionScores, 10);
+        }
+        const weight = parseFloat(response.weight) || 1;
+        const score = parseFloat(response.score) || 0;
+        totalScore += score * weight;
+        totalMaxScore += maxScore * weight;
+      }
+      
+      const actualScore = totalMaxScore > 0 ? Math.round((totalScore / totalMaxScore) * 100) : 0;
+      recalculatedScores.push({ score: actualScore, date: analysis.analyzed_at });
+      
+      // Get skills for this test to count high-level skills
+      const testSkillsResult = await db.query(`
+        SELECT s.id as skill_id FROM test_skills ts
+        JOIN skills s ON ts.skill_id = s.id
+        WHERE ts.test_id = $1
+      `, [analysis.test_id]);
+      
+      for (const skillRow of testSkillsResult.rows) {
+        if (!skillScoresForAchievements[skillRow.skill_id]) {
+          skillScoresForAchievements[skillRow.skill_id] = [];
+        }
+        skillScoresForAchievements[skillRow.skill_id].push(actualScore);
+      }
+    }
+    
+    // Calculate stats from recalculated scores
+    const totalAssessments = recalculatedScores.length;
+    const avgScore = totalAssessments > 0 
+      ? Math.round(recalculatedScores.reduce((a, b) => a + b.score, 0) / totalAssessments * 10) / 10
+      : 0;
+    const highestScore = totalAssessments > 0 
+      ? Math.max(...recalculatedScores.map(s => s.score))
+      : 0;
+    const lowestScore = totalAssessments > 0 
+      ? Math.min(...recalculatedScores.map(s => s.score))
+      : 0;
+    
+    // Count high-level skills (score >= 70%)
+    let highLevelSkills = 0;
+    Object.values(skillScoresForAchievements).forEach(scores => {
+      const avgSkillScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+      if (avgSkillScore >= 70) highLevelSkills++;
+    });
+    
+    // Get other stats from database
+    const otherStats = await db.query(`
       SELECT
-        (SELECT COUNT(*) FROM analysis_results WHERE user_id = $1) as total_assessments,
         (SELECT COUNT(*) FROM test_assignments WHERE user_id = $1 AND status = 'completed') as completed_assignments,
         (SELECT COUNT(*) FROM test_assignments WHERE user_id = $1) as total_assignments,
-        (SELECT ROUND(AVG(overall_score), 1) FROM analysis_results WHERE user_id = $1) as avg_score,
-        (SELECT MAX(overall_score) FROM analysis_results WHERE user_id = $1) as highest_score,
-        (SELECT MIN(overall_score) FROM analysis_results WHERE user_id = $1) as lowest_score,
-        (SELECT COUNT(DISTINCT skill_id) FROM employee_skill_profiles WHERE user_id = $1 AND current_level = 'high') as high_level_skills,
         (SELECT COUNT(*) FROM training_recommendations WHERE user_id = $1 AND status = 'completed') as completed_trainings
     `, [userId]);
+    
+    const userStats = { 
+      rows: [{ 
+        total_assessments: totalAssessments,
+        completed_assignments: otherStats.rows[0]?.completed_assignments || 0,
+        total_assignments: otherStats.rows[0]?.total_assignments || 0,
+        avg_score: avgScore,
+        highest_score: highestScore,
+        lowest_score: lowestScore,
+        high_level_skills: highLevelSkills,
+        completed_trainings: otherStats.rows[0]?.completed_trainings || 0
+      }]
+    };
 
-    // Get score history for trend
-    const scoreHistory = await db.query(`
-      SELECT 
-        TO_CHAR(analyzed_at, 'YYYY-MM') as month,
-        ROUND(AVG(overall_score), 1) as avg_score,
-        COUNT(*) as assessment_count
-      FROM analysis_results
-      WHERE user_id = $1
-        AND analyzed_at >= NOW() - INTERVAL '12 months'
-      GROUP BY TO_CHAR(analyzed_at, 'YYYY-MM')
-      ORDER BY month
-    `, [userId]);
+    // Get score history for trend (using recalculated scores grouped by month)
+    const scoreHistoryMap = {};
+    recalculatedScores.forEach(s => {
+      const month = new Date(s.date).toISOString().slice(0, 7);
+      if (!scoreHistoryMap[month]) {
+        scoreHistoryMap[month] = { scores: [], count: 0 };
+      }
+      scoreHistoryMap[month].scores.push(s.score);
+      scoreHistoryMap[month].count++;
+    });
+    
+    const scoreHistory = { 
+      rows: Object.entries(scoreHistoryMap)
+        .filter(([month]) => {
+          const monthDate = new Date(month + '-01');
+          const twelveMonthsAgo = new Date();
+          twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
+          return monthDate >= twelveMonthsAgo;
+        })
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([month, data]) => ({
+          month,
+          avg_score: Math.round(data.scores.reduce((a, b) => a + b, 0) / data.scores.length * 10) / 10,
+          assessment_count: data.count
+        }))
+    };
 
-    // Calculate improvement trend
-    const improvementTrend = await db.query(`
-      WITH monthly_scores AS (
-        SELECT 
-          TO_CHAR(analyzed_at, 'YYYY-MM') as month,
-          ROUND(AVG(overall_score), 1) as avg_score
-        FROM analysis_results
-        WHERE user_id = $1
-          AND analyzed_at >= NOW() - INTERVAL '3 months'
-        GROUP BY TO_CHAR(analyzed_at, 'YYYY-MM')
-        ORDER BY month DESC
-        LIMIT 2
-      )
-      SELECT 
-        COALESCE(
-          (SELECT avg_score FROM monthly_scores ORDER BY month DESC LIMIT 1) -
-          (SELECT avg_score FROM monthly_scores ORDER BY month DESC OFFSET 1 LIMIT 1),
-          0
-        ) as score_change
-    `, [userId]);
+    // Calculate improvement trend from recalculated scores
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    
+    const recentMonths = scoreHistory.rows
+      .filter(h => new Date(h.month + '-01') >= threeMonthsAgo)
+      .slice(-2); // Get last 2 months
+    
+    let scoreChange = 0;
+    if (recentMonths.length >= 2) {
+      scoreChange = recentMonths[recentMonths.length - 1].avg_score - recentMonths[0].avg_score;
+    }
+    
+    const improvementTrend = { rows: [{ score_change: scoreChange }] };
 
     // Calculate streak (consecutive completed assessments)
     const streakData = await db.query(`
@@ -1321,7 +1516,7 @@ router.get('/employee/leaderboard', authenticate, async (req, res) => {
     }
 
     // Improvement badge (Updated: 20% improvement threshold)
-    const scoreChange = improvementTrend.rows[0]?.score_change || 0;
+    // scoreChange is already defined above from improvementTrend calculation
     if (scoreChange >= 20) {
       achievements.push({ id: 'rising_star', title_ar: 'نجم صاعد', title_en: 'Rising Star', icon: 'trending-up', color: 'orange' });
     }
