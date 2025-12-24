@@ -32,6 +32,7 @@ router.get('/assignment/:assignmentId', authenticate, async (req, res) => {
              q.question_type,
              q.options,
              q.weight,
+             q.assessment_metadata,
              s.name_ar as skill_name_ar,
              s.name_en as skill_name_en
       FROM responses r

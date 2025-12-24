@@ -7,6 +7,8 @@ import {
   ScaleIcon,
   ChartBarIcon,
   ChatBubbleBottomCenterTextIcon,
+  LightBulbIcon,
+  InformationCircleIcon,
 } from '@heroicons/react/24/outline';
 import api from '../utils/api';
 import useAuthStore from '../store/authStore';
@@ -66,6 +68,8 @@ export default function TestResultsImmediate() {
           question_type: response.question_type,
           skill_name: response.skill_name_ar,
           response_value: response.response_value,
+          options: response.options,
+          assessment_metadata: response.assessment_metadata,
           weight,
           raw_score: rawScore,
           max_score: maxScore,
@@ -363,12 +367,116 @@ export default function TestResultsImmediate() {
                     </span>
                   )}
 
+                  {/* Show MCQ answer options with employee's selection */}
+                  {q.question_type === 'mcq' && q.options && Array.isArray(q.options) && (
+                    <div className="mb-3 p-3 bg-slate-100 rounded-lg border border-slate-200">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-sm font-semibold text-slate-700">الإجابة التي اخترتها:</span>
+                      </div>
+                      <div className="space-y-2">
+                        {q.options.map((option, optIndex) => {
+                          const isSelected = q.response_value === option.value;
+                          const isCorrect = option.is_correct;
+                          const selectedAndCorrect = isSelected && isCorrect;
+                          const selectedAndWrong = isSelected && !isCorrect;
+                          
+                          return (
+                            <div
+                              key={option.value || optIndex}
+                              className={`flex items-center gap-3 p-2.5 rounded-lg border transition-all ${
+                                selectedAndCorrect
+                                  ? 'bg-emerald-50 border-emerald-300 ring-2 ring-emerald-200'
+                                  : selectedAndWrong
+                                    ? 'bg-red-50 border-red-300 ring-2 ring-red-200'
+                                    : isCorrect
+                                      ? 'bg-emerald-50/50 border-emerald-200'
+                                      : 'bg-white border-slate-200'
+                              }`}
+                            >
+                              {/* Option Letter */}
+                              <span className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold ${
+                                selectedAndCorrect
+                                  ? 'bg-emerald-500 text-white'
+                                  : selectedAndWrong
+                                    ? 'bg-red-500 text-white'
+                                    : isCorrect
+                                      ? 'bg-emerald-100 text-emerald-700'
+                                      : 'bg-slate-200 text-slate-600'
+                              }`}>
+                                {['أ', 'ب', 'ج', 'د', 'هـ', 'و', 'ز', 'ح'][optIndex] || (optIndex + 1)}
+                              </span>
+                              
+                              {/* Option Text */}
+                              <span className={`flex-1 text-sm ${
+                                isSelected ? 'font-medium' : ''
+                              } ${
+                                selectedAndCorrect
+                                  ? 'text-emerald-800'
+                                  : selectedAndWrong
+                                    ? 'text-red-800'
+                                    : 'text-slate-700'
+                              }`}>
+                                {option.text_ar || option.text || ''}
+                              </span>
+                              
+                              {/* Indicators */}
+                              <div className="flex items-center gap-2 flex-shrink-0">
+                                {isSelected && (
+                                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                                    isCorrect
+                                      ? 'bg-emerald-200 text-emerald-800'
+                                      : 'bg-red-200 text-red-800'
+                                  }`}>
+                                    اختيارك
+                                  </span>
+                                )}
+                                {isCorrect && (
+                                  <span className="flex items-center gap-1 text-xs text-emerald-700">
+                                    <CheckCircleIcon className="w-4 h-4" />
+                                    <span className="font-medium">صحيح</span>
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Rationale and Common Errors - MCQ Questions Only */}
+                  {q.question_type === 'mcq' && q.assessment_metadata && (
+                    <div className="mb-3 space-y-3">
+                      {/* Rationale */}
+                      {q.assessment_metadata.rationale && (
+                        <div className="p-3 bg-emerald-50 rounded-lg border border-emerald-200">
+                          <div className="flex items-center gap-2 mb-2">
+                            <LightBulbIcon className="w-4 h-4 text-emerald-600" />
+                            <span className="text-sm font-semibold text-emerald-700">تبرير الإجابة الصحيحة:</span>
+                          </div>
+                          <p className="text-sm text-slate-700 leading-relaxed">{q.assessment_metadata.rationale}</p>
+                        </div>
+                      )}
+
+                      {/* Common Errors */}
+                      {q.assessment_metadata.common_errors && (
+                        <div className="p-3 bg-amber-50 rounded-lg border border-amber-200">
+                          <div className="flex items-center gap-2 mb-2">
+                            <InformationCircleIcon className="w-4 h-4 text-amber-600" />
+                            <span className="text-sm font-semibold text-amber-700">الأخطاء الشائعة:</span>
+                          </div>
+                          <p className="text-sm text-slate-700 leading-relaxed">{q.assessment_metadata.common_errors}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Show open text answer */}
                   {q.question_type === 'open_text' && q.response_value && (
                     <div className="mb-3 p-3 bg-blue-50 rounded-lg border border-blue-100">
                       <div className="flex items-center gap-2 mb-2">
                         <ChatBubbleBottomCenterTextIcon className="w-4 h-4 text-blue-600" />
-                        <span className="text-xs font-medium text-blue-700">إجابة الموظف:</span>
+                        <span className="text-xs font-medium text-blue-700">إجابتك:</span>
                       </div>
                       <p className="text-sm text-slate-700 whitespace-pre-wrap">{q.response_value}</p>
                     </div>

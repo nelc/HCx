@@ -62,8 +62,9 @@ async function fetchCourseEnrichment(courseId) {
 
 /**
  * Calculate skill match score between user gaps and course skills
+ * Prioritizes English skill names for matching, with Arabic as fallback
  * @param {Array} userGaps - User's skill gaps
- * @param {Array} courseSkills - Course's extracted skills
+ * @param {Array} courseSkills - Course's extracted skills (often in English from AI)
  * @param {Array} courseNativeSkills - Skills from Neo4j relationship
  * @returns {Object} Match score and matched skills
  */
@@ -74,26 +75,45 @@ function calculateSkillMatchScore(userGaps, courseSkills = [], courseNativeSkill
   let totalScore = 0;
   
   // Combine AI-extracted skills with native Neo4j skills
+  // Prioritize English names (name_en) over Arabic (name_ar) for course skills
   const allCourseSkills = [
     ...courseSkills.map(s => typeof s === 'string' ? s.toLowerCase() : ''),
-    ...courseNativeSkills.map(s => (s.name_ar || s.name_en || s || '').toLowerCase())
+    ...courseNativeSkills.map(s => (s.name_en || s.name_ar || s || '').toLowerCase())
   ];
   
   // Check each user gap against course skills
   for (const gap of userGaps) {
-    const gapSkillName = (gap.skill_name_ar || gap.skill_name_en || '').toLowerCase();
+    // Prioritize English skill name for matching, fallback to Arabic
+    const gapSkillNameEn = (gap.skill_name_en || '').toLowerCase();
+    const gapSkillNameAr = (gap.skill_name_ar || '').toLowerCase();
     const gapScore = gap.gap_score || gap.gap_percentage || 0;
     
-    // Check for matches
+    // Check for matches - try English first, then Arabic
+    let matched = false;
     for (const courseSkill of allCourseSkills) {
-      if (courseSkill && gapSkillName && (
-        courseSkill.includes(gapSkillName) || 
-        gapSkillName.includes(courseSkill) ||
-        calculateStringSimilarity(courseSkill, gapSkillName) > 0.6
+      if (!courseSkill) continue;
+      
+      // Match against English name first (higher priority)
+      if (gapSkillNameEn && (
+        courseSkill.includes(gapSkillNameEn) || 
+        gapSkillNameEn.includes(courseSkill) ||
+        calculateStringSimilarity(courseSkill, gapSkillNameEn) > 0.6
       )) {
-        matchedSkills.push(gap.skill_name_ar || gap.skill_name_en);
-        // Higher gap score = higher priority = higher weight
+        matchedSkills.push(gap.skill_name_en || gap.skill_name_ar);
         totalScore += (gapScore / 100) * (1 / (gap.priority || 1));
+        matched = true;
+        break;
+      }
+      
+      // Fallback to Arabic name matching
+      if (!matched && gapSkillNameAr && (
+        courseSkill.includes(gapSkillNameAr) || 
+        gapSkillNameAr.includes(courseSkill) ||
+        calculateStringSimilarity(courseSkill, gapSkillNameAr) > 0.6
+      )) {
+        matchedSkills.push(gap.skill_name_en || gap.skill_name_ar);
+        totalScore += (gapScore / 100) * (1 / (gap.priority || 1));
+        matched = true;
         break;
       }
     }
@@ -127,18 +147,33 @@ function calculateStringSimilarity(str1, str2) {
 
 /**
  * Calculate difficulty alignment score
- * @param {string} userCategory - User's proficiency category key
+ * Handles users with exam-based levels AND users without any level data
+ * @param {string} userCategory - User's proficiency category key (can be null/undefined for no-level users)
  * @param {string} courseDifficulty - Course difficulty level
  * @param {Object} targetAudience - AI-enriched target audience info
  * @returns {number} Score 0-100
  */
 function calculateDifficultyScore(userCategory, courseDifficulty, targetAudience = {}) {
-  const validLevels = getValidDifficultyLevels(userCategory);
-  
-  // Check direct difficulty match
-  if (!courseDifficulty) return 50; // Neutral if unknown
+  // Check if course has difficulty info
+  if (!courseDifficulty) return 50; // Neutral if course difficulty unknown
   
   const difficultyLower = courseDifficulty.toLowerCase();
+  
+  // Handle NO USER LEVEL case - show all courses but prioritize beginner/intermediate
+  if (!userCategory || userCategory === 'none' || userCategory === '') {
+    // User has no exam data - prioritize beginner/intermediate courses
+    if (difficultyLower === 'beginner') {
+      return 100; // Highest priority for beginners when no user level
+    } else if (difficultyLower === 'intermediate') {
+      return 90; // High priority for intermediate
+    } else if (difficultyLower === 'advanced') {
+      return 60; // Lower but still included - advanced users might browse without taking exam
+    }
+    return 70; // Unknown difficulty - neutral
+  }
+  
+  // User HAS a level from exam results
+  const validLevels = getValidDifficultyLevels(userCategory);
   
   // Check against AI target audience level
   const aiLevel = targetAudience?.level?.toLowerCase();
@@ -153,9 +188,9 @@ function calculateDifficultyScore(userCategory, courseDifficulty, targetAudience
     return 100 - (levelIndex * 15);
   }
   
-  // Course is too advanced for user
+  // Course is too advanced for user's current level
   if (!validLevels.includes(difficultyLower)) {
-    return 20; // Low but not zero - might still be useful
+    return 20; // Low but not zero - might still be useful for stretch goals
   }
   
   return 50;
@@ -551,10 +586,11 @@ async function storeRecommendationsWithReasons(userId, analysisId, recommendatio
  * 1. course_skills table (PostgreSQL skill relationships)
  * 2. course_enrichments table (AI-extracted skills)
  * 
- * Matching is based on skill names and levels, not graph traversal
+ * Matching prioritizes English skill/domain names, with Arabic as fallback
+ * Matches against: course subject, skills.name_en, AI-extracted skills
  * 
  * @param {Array} userGaps - User's skill gaps from analysis_results
- * @param {string} userCategoryKey - User's proficiency category (beginner/intermediate/advanced)
+ * @param {string} userCategoryKey - User's proficiency category (beginner/intermediate/advanced) or null for no-level
  * @param {number} limit - Maximum courses to return
  * @returns {Promise<Array>} Recommended courses
  */
@@ -563,23 +599,52 @@ async function getSkillBasedRecommendations(userGaps, userCategoryKey, limit = 2
     return [];
   }
 
-  // Get valid difficulty levels for this user (ensure lowercase for comparison)
-  const validLevels = getValidDifficultyLevels(userCategoryKey).map(l => l.toLowerCase());
+  // Handle "no level" case - include all difficulty levels when user has no exam data
+  // When user has a level, filter by valid levels for that category
+  let validLevels;
+  let hasUserLevel = true;
   
-  // Build skill matching criteria
+  if (!userCategoryKey || userCategoryKey === 'none' || userCategoryKey === '') {
+    // No level data - show all difficulty levels
+    validLevels = ['beginner', 'intermediate', 'advanced'];
+    hasUserLevel = false;
+    console.log(`📊 No user level - showing ALL difficulty levels with beginner/intermediate priority`);
+  } else {
+    // Get valid difficulty levels for this user's category
+    validLevels = getValidDifficultyLevels(userCategoryKey).map(l => l.toLowerCase());
+  }
+  
+  // Build skill matching criteria - PRIORITIZE ENGLISH NAMES
   const skillIds = userGaps.map(g => g.skill_id).filter(Boolean);
-  const skillNames = userGaps.flatMap(g => [
-    g.skill_name_ar,
-    g.skill_name_en
-  ]).filter(Boolean).map(s => s.toLowerCase());
+  
+  // Collect English skill names (primary) and Arabic names (fallback)
+  const skillNamesEn = userGaps
+    .map(g => g.skill_name_en)
+    .filter(Boolean)
+    .map(s => s.toLowerCase());
+  
+  const skillNamesAr = userGaps
+    .map(g => g.skill_name_ar)
+    .filter(Boolean)
+    .map(s => s.toLowerCase());
+  
+  // Combined skill names - English first for matching
+  const skillNames = [...new Set([...skillNamesEn, ...skillNamesAr])];
+  
+  // Also collect domain names in English for subject matching
+  const domainNamesEn = userGaps
+    .map(g => g.domain_name_en)
+    .filter(Boolean)
+    .map(s => s.toLowerCase());
 
-  console.log(`🔍 Searching courses for ${skillIds.length} skill IDs and ${skillNames.length} skill names`);
+  console.log(`🔍 Searching courses for ${skillIds.length} skill IDs`);
   console.log(`📊 Valid difficulty levels: ${validLevels.join(', ')}`);
-  console.log(`🎯 Skill IDs: ${skillIds.slice(0, 3).join(', ')}${skillIds.length > 3 ? '...' : ''}`);
-  console.log(`🎯 Skill names: ${skillNames.slice(0, 5).join(', ')}${skillNames.length > 5 ? '...' : ''}`);
+  console.log(`🎯 English skill names: ${skillNamesEn.slice(0, 5).join(', ')}${skillNamesEn.length > 5 ? '...' : ''}`);
+  console.log(`🎯 Domain names (EN): ${domainNamesEn.slice(0, 3).join(', ')}${domainNamesEn.length > 3 ? '...' : ''}`);
 
   // Query 1: Get courses that have matching skills via course_skills table
-  // Match by skill ID OR by skill name (more flexible matching)
+  // PRIORITIZE: Match by skill ID, then English skill name, then Arabic skill name
+  // Also match course.subject against English domain names
   const coursesWithSkillsQuery = `
     SELECT DISTINCT 
       c.id as course_id,
@@ -598,21 +663,28 @@ async function getSkillBasedRecommendations(userGaps, userCategoryKey, limit = 2
       cs.relevance_score,
       s.id as matched_skill_id,
       s.name_ar as matched_skill_name_ar,
-      s.name_en as matched_skill_name_en
+      s.name_en as matched_skill_name_en,
+      CASE 
+        WHEN cs.skill_id = ANY($1) THEN 3
+        WHEN LOWER(s.name_en) = ANY($3) THEN 2
+        WHEN LOWER(s.name_ar) = ANY($3) THEN 1
+        ELSE 0
+      END as match_priority
     FROM courses c
     INNER JOIN course_skills cs ON c.id = cs.course_id
     INNER JOIN skills s ON cs.skill_id = s.id
     WHERE (
       cs.skill_id = ANY($1)
-      OR LOWER(s.name_ar) = ANY($3)
       OR LOWER(s.name_en) = ANY($3)
+      OR LOWER(s.name_ar) = ANY($3)
+      OR LOWER(c.subject) = ANY($4)
     )
     AND (c.difficulty_level IS NULL OR c.difficulty_level = '' OR LOWER(c.difficulty_level) = ANY($2))
-    ORDER BY cs.relevance_score DESC
+    ORDER BY match_priority DESC, cs.relevance_score DESC
   `;
 
   // Query 2: Get courses with AI-extracted skills matching user's gaps
-  // Also query courses by name/description matching skill names
+  // Also query courses by name/description/subject matching skill names (English priority)
   const coursesWithAISkillsQuery = `
     SELECT 
       c.id as course_id,
@@ -642,8 +714,9 @@ async function getSkillBasedRecommendations(userGaps, userCategoryKey, limit = 2
 
   try {
     // Execute both queries in parallel
+    // Pass domainNamesEn as $4 for subject matching
     const [skillMatchResult, aiSkillResult] = await Promise.all([
-      db.query(coursesWithSkillsQuery, [skillIds, validLevels, skillNames]),
+      db.query(coursesWithSkillsQuery, [skillIds, validLevels, skillNames, domainNamesEn]),
       db.query(coursesWithAISkillsQuery, [validLevels])
     ]);
 
@@ -674,22 +747,28 @@ async function getSkillBasedRecommendations(userGaps, userCategoryKey, limit = 2
           skill_match_source: 'postgresql',
           total_relevance: 0,
           ai_extracted_skills: [],
-          enrichment: null
+          enrichment: null,
+          match_priority: row.match_priority || 0
         });
       }
       
       const course = courseMap.get(row.course_id);
       course.matched_skills.push({
         skill_id: row.matched_skill_id,
+        // Prioritize English name in output
         skill_name_ar: row.matched_skill_name_ar,
         skill_name_en: row.matched_skill_name_en,
         relevance_score: row.relevance_score
       });
       course.total_relevance += parseFloat(row.relevance_score || 0);
+      // Keep highest match priority
+      if (row.match_priority > course.match_priority) {
+        course.match_priority = row.match_priority;
+      }
     }
 
     // Process AI-enriched courses and match against user skill names
-    // Also match on course name/description if no AI skills
+    // PRIORITIZE ENGLISH skill names for matching
     for (const row of aiSkillResult.rows) {
       // Skip if already matched by direct skill match
       if (courseMap.has(row.course_id)) {
@@ -714,42 +793,83 @@ async function getSkillBasedRecommendations(userGaps, userCategoryKey, limit = 2
       const matchedAISkills = [];
       
       // Check if any AI-extracted skills match user's gaps
+      // AI-extracted skills are often in English, so match against English skill names first
       for (const aiSkill of extractedSkills) {
         const aiSkillLower = (typeof aiSkill === 'string' ? aiSkill : '').toLowerCase();
         
-        for (const skillName of skillNames) {
-          if (aiSkillLower && skillName && (
-            aiSkillLower.includes(skillName) ||
-            skillName.includes(aiSkillLower) ||
-            calculateStringSimilarity(aiSkillLower, skillName) > 0.5
+        // First try matching against English skill names (higher priority)
+        for (const skillNameEn of skillNamesEn) {
+          if (aiSkillLower && skillNameEn && (
+            aiSkillLower.includes(skillNameEn) ||
+            skillNameEn.includes(aiSkillLower) ||
+            calculateStringSimilarity(aiSkillLower, skillNameEn) > 0.5
           )) {
             matchedAISkills.push(aiSkill);
             break;
           }
         }
+        
+        // If no English match, try Arabic skill names
+        if (!matchedAISkills.includes(aiSkill)) {
+          for (const skillNameAr of skillNamesAr) {
+            if (aiSkillLower && skillNameAr && (
+              aiSkillLower.includes(skillNameAr) ||
+              skillNameAr.includes(aiSkillLower) ||
+              calculateStringSimilarity(aiSkillLower, skillNameAr) > 0.5
+            )) {
+              matchedAISkills.push(aiSkill);
+              break;
+            }
+          }
+        }
       }
       
-      // Also check course name and description for skill matches
-      const courseNameAr = (row.name_ar || '').toLowerCase();
+      // Also check course name, description, and SUBJECT for skill/domain matches
+      // Prioritize English fields for matching
       const courseNameEn = (row.name_en || '').toLowerCase();
+      const courseNameAr = (row.name_ar || '').toLowerCase();
+      const courseDescEn = (row.description_en || '').toLowerCase();
       const courseDescAr = (row.description_ar || '').toLowerCase();
       const courseSubject = (row.subject || '').toLowerCase();
       
       const nameDescMatches = [];
-      for (const skillName of skillNames) {
-        if (skillName && (
-          courseNameAr.includes(skillName) ||
-          courseNameEn.includes(skillName) ||
-          courseDescAr.includes(skillName) ||
-          courseSubject.includes(skillName)
+      
+      // Match English skill names against course content (higher priority)
+      for (const skillNameEn of skillNamesEn) {
+        if (skillNameEn && (
+          courseNameEn.includes(skillNameEn) ||
+          courseDescEn.includes(skillNameEn) ||
+          courseSubject.includes(skillNameEn)
         )) {
-          // Extract original skill name for this match
           const originalSkill = userGaps.find(g => 
-            (g.skill_name_ar || '').toLowerCase() === skillName ||
-            (g.skill_name_en || '').toLowerCase() === skillName
+            (g.skill_name_en || '').toLowerCase() === skillNameEn
           );
           if (originalSkill) {
-            nameDescMatches.push(originalSkill.skill_name_ar || originalSkill.skill_name_en);
+            nameDescMatches.push(originalSkill.skill_name_en || originalSkill.skill_name_ar);
+          }
+        }
+      }
+      
+      // Match domain names (EN) against course subject
+      for (const domainNameEn of domainNamesEn) {
+        if (domainNameEn && courseSubject.includes(domainNameEn)) {
+          nameDescMatches.push(`[Domain: ${domainNameEn}]`);
+        }
+      }
+      
+      // Fallback: Match Arabic skill names against Arabic course content
+      if (nameDescMatches.length === 0) {
+        for (const skillNameAr of skillNamesAr) {
+          if (skillNameAr && (
+            courseNameAr.includes(skillNameAr) ||
+            courseDescAr.includes(skillNameAr)
+          )) {
+            const originalSkill = userGaps.find(g => 
+              (g.skill_name_ar || '').toLowerCase() === skillNameAr
+            );
+            if (originalSkill) {
+              nameDescMatches.push(originalSkill.skill_name_en || originalSkill.skill_name_ar);
+            }
           }
         }
       }
@@ -783,7 +903,8 @@ async function getSkillBasedRecommendations(userGaps, userCategoryKey, limit = 2
             quality_indicators: row.quality_indicators,
             summary_ar: row.summary_ar,
             summary_en: row.summary_en
-          } : null
+          } : null,
+          match_priority: 0
         });
       }
     }
@@ -805,12 +926,29 @@ async function getSkillBasedRecommendations(userGaps, userCategoryKey, limit = 2
       const aiMatchScore = aiSkillMatchCount > 0 ? Math.min(100, aiSkillMatchCount * 25) : 0;
       
       // Difficulty alignment score
+      // When NO user level: prioritize beginner/intermediate courses
       let difficultyScore = 50;
-      if (course.difficulty_level) {
-        if (course.difficulty_level === userCategoryKey) {
+      const courseDiffLower = (course.difficulty_level || '').toLowerCase();
+      
+      if (!hasUserLevel) {
+        // No user level - prioritize beginner/intermediate
+        if (courseDiffLower === 'beginner') {
+          difficultyScore = 100; // Highest priority for beginners
+        } else if (courseDiffLower === 'intermediate') {
+          difficultyScore = 90; // High priority for intermediate
+        } else if (courseDiffLower === 'advanced') {
+          difficultyScore = 60; // Lower but still included
+        } else {
+          difficultyScore = 70; // Unknown level - neutral
+        }
+      } else {
+        // User has a level - match accordingly
+        if (courseDiffLower === userCategoryKey) {
           difficultyScore = 100;
-        } else if (validLevels.includes(course.difficulty_level)) {
+        } else if (validLevels.includes(courseDiffLower)) {
           difficultyScore = 80;
+        } else {
+          difficultyScore = 40; // Course difficulty doesn't match user level
         }
       }
 
@@ -830,11 +968,13 @@ async function getSkillBasedRecommendations(userGaps, userCategoryKey, limit = 2
           ai_match: Math.round(aiMatchScore),
           difficulty_alignment: Math.round(difficultyScore)
         },
+        // Prioritize English skill names in output
         matching_skills: [
-          ...course.matched_skills.map(s => s.skill_name_ar || s.skill_name_en),
+          ...course.matched_skills.map(s => s.skill_name_en || s.skill_name_ar),
           ...course.ai_extracted_skills
         ],
-        source: 'skill_based_postgresql'
+        source: 'skill_based_postgresql',
+        has_user_level: hasUserLevel
       };
     });
 

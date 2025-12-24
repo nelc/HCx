@@ -342,7 +342,9 @@ router.get('/neo4j',
       // Get local overrides from PostgreSQL for these courses
       let overridesMap = {};
       let skillOverridesMap = {};
-      let hiddenCoursesSet = new Set();
+      let visibleCoursesSet = new Set();
+      const isAdminOrOfficer = req.user?.role === 'admin' || req.user?.role === 'training_officer';
+      
       if (courseIds.length > 0) {
         try {
           const overridesResult = await db.query(
@@ -376,17 +378,17 @@ router.get('/neo4j',
           console.log('Note: course_skill_overrides table may not exist yet');
         }
 
-        // Get hidden courses
+        // Get visible courses (whitelist - courses visible to employees)
         try {
-          const hiddenResult = await db.query(
-            `SELECT course_id FROM hidden_courses WHERE course_id = ANY($1)`,
+          const visibleResult = await db.query(
+            `SELECT course_id FROM visible_courses WHERE course_id = ANY($1)`,
             [courseIds]
           );
-          hiddenResult.rows.forEach(h => {
-            hiddenCoursesSet.add(h.course_id);
+          visibleResult.rows.forEach(v => {
+            visibleCoursesSet.add(v.course_id);
           });
         } catch (e) {
-          console.log('Note: hidden_courses table may not exist yet');
+          console.log('Note: visible_courses table may not exist yet');
         }
       }
       
@@ -456,7 +458,7 @@ router.get('/neo4j',
           price: course.price || null,
           skills: skills,
           source: 'neo4j',
-          is_hidden: hiddenCoursesSet.has(course.course_id),
+          is_visible: visibleCoursesSet.has(course.course_id),
           has_local_overrides: Object.keys(overrides).length > 0 || skillOverrides.add.length > 0 || skillOverrides.remove.length > 0,
           // AI-enriched fields from PostgreSQL
           extracted_skills: enrichment?.extracted_skills || [],
@@ -472,15 +474,26 @@ router.get('/neo4j',
         };
       });
 
-      console.log(`✅ Found ${mappedCourses.length} courses in Neo4j (total: ${result.total})`);
+      // For employees, filter to only show visible courses (whitelist approach)
+      // Admins and training officers see all courses
+      let finalCourses = mappedCourses;
+      let finalTotal = result.total;
+      
+      if (!isAdminOrOfficer) {
+        finalCourses = mappedCourses.filter(c => c.is_visible);
+        finalTotal = finalCourses.length;
+        console.log(`👁️ Employee view: filtered to ${finalCourses.length} visible courses`);
+      }
+
+      console.log(`✅ Found ${finalCourses.length} courses in Neo4j (total: ${finalTotal})`);
 
       res.json({
-        courses: mappedCourses,
+        courses: finalCourses,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
-          total: result.total,
-          totalPages: Math.ceil(result.total / parseInt(limit))
+          total: finalTotal,
+          totalPages: Math.ceil(finalTotal / parseInt(limit))
         },
         source: 'neo4j'
       });
@@ -865,8 +878,9 @@ router.delete('/neo4j/:courseId/skills/:skillName',
 );
 
 /**
- * POST /api/courses/neo4j/:courseId/toggle-hidden
- * Toggle course hidden status (hide from recommendations)
+ * POST /api/courses/neo4j/:courseId/toggle-visibility
+ * Toggle course visibility for employees (whitelist approach)
+ * Courses are hidden by default - add to visible_courses to make visible
  * Admin only
  */
 router.post('/neo4j/:courseId/toggle-hidden',
@@ -874,67 +888,67 @@ router.post('/neo4j/:courseId/toggle-hidden',
   async (req, res) => {
     try {
       const { courseId } = req.params;
-      const { hidden } = req.body; // Optional: explicitly set hidden status
+      const { visible } = req.body; // Optional: explicitly set visibility status
 
       console.log(`👁️ Admin toggling course visibility: ${courseId}`);
 
-      // Ensure hidden_courses table exists
+      // Ensure visible_courses table exists (whitelist of courses visible to employees)
       await db.query(`
-        CREATE TABLE IF NOT EXISTS hidden_courses (
+        CREATE TABLE IF NOT EXISTS visible_courses (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           course_id VARCHAR(255) NOT NULL UNIQUE,
-          hidden_by UUID,
-          hidden_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          made_visible_by UUID,
+          visible_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
 
-      // Check current status
+      // Check current visibility status
       const existingResult = await db.query(
-        'SELECT * FROM hidden_courses WHERE course_id = $1',
+        'SELECT * FROM visible_courses WHERE course_id = $1',
         [courseId]
       );
       
-      const isCurrentlyHidden = existingResult.rows.length > 0;
-      const shouldHide = hidden !== undefined ? hidden : !isCurrentlyHidden;
+      const isCurrentlyVisible = existingResult.rows.length > 0;
+      const shouldMakeVisible = visible !== undefined ? visible : !isCurrentlyVisible;
 
-      if (shouldHide && !isCurrentlyHidden) {
-        // Hide the course
+      if (shouldMakeVisible && !isCurrentlyVisible) {
+        // Make course visible to employees (add to whitelist)
         await db.query(
-          'INSERT INTO hidden_courses (course_id, hidden_by) VALUES ($1, $2)',
+          'INSERT INTO visible_courses (course_id, made_visible_by) VALUES ($1, $2)',
           [courseId, req.user?.id]
         );
-        console.log(`🙈 Course hidden: ${courseId}`);
+        console.log(`👁️ Course made visible to employees: ${courseId}`);
         
         res.json({
           success: true,
-          message: 'تم إخفاء الدورة من التوصيات',
+          message: 'تم إظهار الدورة للموظفين',
           course_id: courseId,
-          hidden: true
+          visible: true
         });
-      } else if (!shouldHide && isCurrentlyHidden) {
-        // Unhide the course
+      } else if (!shouldMakeVisible && isCurrentlyVisible) {
+        // Hide course from employees (remove from whitelist)
         await db.query(
-          'DELETE FROM hidden_courses WHERE course_id = $1',
+          'DELETE FROM visible_courses WHERE course_id = $1',
           [courseId]
         );
-        console.log(`👁️ Course unhidden: ${courseId}`);
+        console.log(`🙈 Course hidden from employees: ${courseId}`);
         
         res.json({
           success: true,
-          message: 'تم إظهار الدورة في التوصيات',
+          message: 'تم إخفاء الدورة عن الموظفين',
           course_id: courseId,
-          hidden: false
+          visible: false
         });
       } else {
         res.json({
           success: true,
-          message: shouldHide ? 'الدورة مخفية بالفعل' : 'الدورة ظاهرة بالفعل',
+          message: shouldMakeVisible ? 'الدورة ظاهرة للموظفين بالفعل' : 'الدورة مخفية عن الموظفين بالفعل',
           course_id: courseId,
-          hidden: shouldHide
+          visible: shouldMakeVisible
         });
       }
     } catch (error) {
-      console.error('Toggle course hidden error:', error);
+      console.error('Toggle course visibility error:', error);
       res.status(error.status || 500).json({
         error: 'Failed to toggle course visibility',
         message: error.message

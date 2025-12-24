@@ -182,10 +182,10 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
         LIMIT 1
       `, [userId]),
       
-      // Hidden courses (both user-specific and global)
+      // Visible courses (whitelist - courses allowed for employees) and user-hidden recommendations
       Promise.all([
         db.query('SELECT course_id FROM user_hidden_recommendations WHERE user_id = $1', [userId]).catch(() => ({ rows: [] })),
-        db.query('SELECT course_id FROM hidden_courses').catch(() => ({ rows: [] }))
+        db.query('SELECT course_id FROM visible_courses').catch(() => ({ rows: [] }))
       ]),
       
       // Admin-added custom courses
@@ -392,10 +392,11 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
     const [testRecs, interestRecs, careerRecs] = await Promise.all([
       // Test-based recommendations using SKILL + LEVEL matching (NOT Neo4j graph)
       // This directly matches skills from PostgreSQL course_skills + AI-extracted skills
+      // Pass null for userCategoryKey when no exam data - shows all levels with beginner/intermediate priority
       priorityGaps.length > 0
         ? getSkillBasedRecommendations(
             priorityGaps,
-            userCategory?.key || 'beginner',
+            userCategory?.key || null,  // null = no level, show all difficulties
             parsedLimit * 2  // Get more for better filtering
           ).catch(err => {
             console.error('Skill-based recommendations error:', err);
@@ -905,12 +906,13 @@ router.get('/neo4j/:userId', authenticate, async (req, res) => {
 
     // Get skill-based recommendations from PostgreSQL (NOT Neo4j graph relationships)
     // This matches courses by skill names + AI-extracted skills + difficulty level
+    // Pass null for userCategoryKey when no exam data - shows all levels with beginner/intermediate priority
     let skillBasedRecommendations = [];
     if (priorityGaps.length > 0) {
       try {
         skillBasedRecommendations = await getSkillBasedRecommendations(
           priorityGaps,
-          userCategory.key,
+          userCategory?.key || null,  // null = no level, show all difficulties
           parseInt(limit) * 2
         );
         console.log('📊 Skill-Based Query Results:', skillBasedRecommendations.length, 'courses');
@@ -965,20 +967,22 @@ router.get('/neo4j/:userId', authenticate, async (req, res) => {
     // Sort by recommendation score
     enrichedRecommendations.sort((a, b) => (b.recommendation_score || 0) - (a.recommendation_score || 0));
     
-    // Filter out hidden courses from recommendations
-    let hiddenCourseIds = new Set();
+    // Filter to only include visible courses (whitelist approach)
+    // Courses are hidden by default - only show courses that are in visible_courses table
+    let visibleCourseIds = new Set();
     try {
-      const hiddenResult = await db.query('SELECT course_id FROM hidden_courses');
-      hiddenResult.rows.forEach(h => hiddenCourseIds.add(h.course_id));
+      const visibleResult = await db.query('SELECT course_id FROM visible_courses');
+      visibleResult.rows.forEach(v => visibleCourseIds.add(v.course_id));
     } catch (e) {
-      console.log('Note: hidden_courses table may not exist yet');
+      console.log('Note: visible_courses table may not exist yet');
     }
 
-    const filteredRecommendations = hiddenCourseIds.size > 0 
-      ? enrichedRecommendations.filter(r => !hiddenCourseIds.has(r.course_id))
-      : enrichedRecommendations;
+    // Only include courses that are in the visible_courses whitelist
+    const filteredRecommendations = visibleCourseIds.size > 0 
+      ? enrichedRecommendations.filter(r => visibleCourseIds.has(r.course_id))
+      : []; // If no courses are whitelisted, show none
     
-    console.log('✅ Enriched Recommendations:', filteredRecommendations.length);
+    console.log(`✅ Filtered Recommendations: ${filteredRecommendations.length} visible out of ${enrichedRecommendations.length} total`);
 
     res.json({
       recommendations: filteredRecommendations,

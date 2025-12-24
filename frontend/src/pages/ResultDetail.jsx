@@ -8,6 +8,8 @@ import {
   CheckCircleIcon,
   ExclamationTriangleIcon,
   ScaleIcon,
+  LightBulbIcon,
+  InformationCircleIcon,
 } from '@heroicons/react/24/outline';
 import api from '../utils/api';
 import { formatDate } from '../utils/helpers';
@@ -42,9 +44,9 @@ export default function ResultDetail() {
       }
       setResult(response.data);
 
-      // If we have assignment_id, fetch responses for admin grading
+      // Fetch responses for viewing answers (for all users)
       const actualAssignmentId = assignmentId || response.data.assignment_id;
-      if (actualAssignmentId && (user?.role === 'admin' || user?.role === 'training_officer')) {
+      if (actualAssignmentId) {
         const responsesRes = await api.get(`/responses/assignment/${actualAssignmentId}`);
         setResponses(responsesRes.data || []);
       }
@@ -264,8 +266,8 @@ export default function ResultDetail() {
         </div>
       </motion.div>
 
-      {/* Admin Grading Section for Open Questions */}
-      {isAdmin && responses.length > 0 && (
+      {/* Responses Detail Section */}
+      {responses.length > 0 && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -275,9 +277,11 @@ export default function ResultDetail() {
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-2">
               <ScaleIcon className="w-6 h-6 text-primary-600" />
-              <h3 className="text-lg font-semibold text-primary-700">تفصيل الإجابات والتقييم</h3>
+              <h3 className="text-lg font-semibold text-primary-700">
+                {isAdmin ? 'تفصيل الإجابات والتقييم' : 'تفصيل إجاباتك'}
+              </h3>
             </div>
-            {hasUngradedQuestions && (
+            {isAdmin && hasUngradedQuestions && (
               <span className="text-sm text-amber-600">
                 {ungradedOpenQuestions.length} سؤال يحتاج تقييم
               </span>
@@ -303,7 +307,7 @@ export default function ResultDetail() {
                 <div
                   key={response.id}
                   className={`p-4 rounded-xl border transition-colors ${
-                    needsGrading 
+                    isAdmin && needsGrading 
                       ? 'bg-amber-50 border-amber-200' 
                       : 'bg-slate-50 border-slate-100 hover:border-primary-200'
                   }`}
@@ -312,10 +316,10 @@ export default function ResultDetail() {
                     {/* Question Number */}
                     <div className="flex-shrink-0">
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                        needsGrading ? 'bg-amber-200' : 'bg-primary-100'
+                        isAdmin && needsGrading ? 'bg-amber-200' : 'bg-primary-100'
                       }`}>
                         <span className={`text-sm font-semibold ${
-                          needsGrading ? 'text-amber-700' : 'text-primary-700'
+                          isAdmin && needsGrading ? 'text-amber-700' : 'text-primary-700'
                         }`}>{index + 1}</span>
                       </div>
                     </div>
@@ -336,26 +340,107 @@ export default function ResultDetail() {
                             {response.skill_name_ar}
                           </span>
                         )}
-                        {needsGrading && (
+                        {isAdmin && needsGrading && (
                           <span className="text-xs px-2 py-1 bg-amber-200 text-amber-800 rounded font-medium">
                             يحتاج تقييم
                           </span>
                         )}
                       </div>
 
+                      {/* Show MCQ answer options with employee's selection */}
+                      {response.question_type === 'mcq' && response.options && Array.isArray(response.options) && (
+                        <div className="mb-3 p-3 bg-slate-100 rounded-lg border border-slate-200">
+                          <div className="flex items-center gap-2 mb-3">
+                            <span className="text-sm font-semibold text-slate-700">
+                              {isAdmin ? 'إجابة الموظف:' : 'الإجابة التي اخترتها:'}
+                            </span>
+                          </div>
+                          <div className="space-y-2">
+                            {response.options.map((option, optIndex) => {
+                              const isSelected = response.response_value === option.value;
+                              const isCorrect = option.is_correct;
+                              const selectedAndCorrect = isSelected && isCorrect;
+                              const selectedAndWrong = isSelected && !isCorrect;
+                              
+                              return (
+                                <div
+                                  key={option.value || optIndex}
+                                  className={`flex items-center gap-3 p-2.5 rounded-lg border transition-all ${
+                                    selectedAndCorrect
+                                      ? 'bg-emerald-50 border-emerald-300 ring-2 ring-emerald-200'
+                                      : selectedAndWrong
+                                        ? 'bg-red-50 border-red-300 ring-2 ring-red-200'
+                                        : isCorrect
+                                          ? 'bg-emerald-50/50 border-emerald-200'
+                                          : 'bg-white border-slate-200'
+                                  }`}
+                                >
+                                  {/* Option Letter */}
+                                  <span className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold ${
+                                    selectedAndCorrect
+                                      ? 'bg-emerald-500 text-white'
+                                      : selectedAndWrong
+                                        ? 'bg-red-500 text-white'
+                                        : isCorrect
+                                          ? 'bg-emerald-100 text-emerald-700'
+                                          : 'bg-slate-200 text-slate-600'
+                                  }`}>
+                                    {['أ', 'ب', 'ج', 'د', 'هـ', 'و', 'ز', 'ح'][optIndex] || (optIndex + 1)}
+                                  </span>
+                                  
+                                  {/* Option Text */}
+                                  <span className={`flex-1 text-sm ${
+                                    isSelected ? 'font-medium' : ''
+                                  } ${
+                                    selectedAndCorrect
+                                      ? 'text-emerald-800'
+                                      : selectedAndWrong
+                                        ? 'text-red-800'
+                                        : 'text-slate-700'
+                                  }`}>
+                                    {option.text_ar || option.text || ''}
+                                  </span>
+                                  
+                                  {/* Indicators */}
+                                  <div className="flex items-center gap-2 flex-shrink-0">
+                                    {isSelected && (
+                                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                                        isCorrect
+                                          ? 'bg-emerald-200 text-emerald-800'
+                                          : 'bg-red-200 text-red-800'
+                                      }`}>
+                                        {isAdmin ? 'اختيار الموظف' : 'اختيارك'}
+                                      </span>
+                                    )}
+                                    {isCorrect && (
+                                      <span className="flex items-center gap-1 text-xs text-emerald-700">
+                                        <CheckCircleIcon className="w-4 h-4" />
+                                        <span className="font-medium">صحيح</span>
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
                       {/* Show employee's answer for open_text questions */}
                       {isOpenText && response.response_value && (
                         <div className="mb-3 p-3 bg-blue-50 rounded-lg border border-blue-100">
                           <div className="flex items-center gap-2 mb-2">
                             <ChatBubbleBottomCenterTextIcon className="w-4 h-4 text-blue-600" />
-                            <span className="text-xs font-medium text-blue-700">إجابة الموظف:</span>
+                            <span className="text-xs font-medium text-blue-700">
+                              {isAdmin ? 'إجابة الموظف:' : 'إجابتك:'}
+                            </span>
                           </div>
                           <p className="text-sm text-slate-700 whitespace-pre-wrap">{response.response_value}</p>
                         </div>
                       )}
 
                       {/* Admin grading for open_text questions */}
-                      {isOpenText && (
+                      {isAdmin && isOpenText && (
                         <div className="mb-3 p-3 bg-white rounded-lg border border-slate-200">
                           <div className="flex flex-wrap items-center gap-3">
                             <label className="text-sm font-medium text-slate-700">تقييم المدير:</label>
@@ -388,44 +473,75 @@ export default function ResultDetail() {
                         </div>
                       )}
 
-                      {/* Score Grid */}
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                        <div className="p-2 bg-white rounded-lg border border-slate-200">
-                          <p className="text-xs text-slate-500 mb-1">الوزن</p>
-                          <p className="text-sm font-semibold text-slate-800">×{weight}</p>
+                      {/* Score Grid - Admin only */}
+                      {isAdmin && (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                          <div className="p-2 bg-white rounded-lg border border-slate-200">
+                            <p className="text-xs text-slate-500 mb-1">الوزن</p>
+                            <p className="text-sm font-semibold text-slate-800">×{weight}</p>
+                          </div>
+                          <div className="p-2 bg-white rounded-lg border border-slate-200">
+                            <p className="text-xs text-slate-500 mb-1">النقاط الخام</p>
+                            <p className="text-sm font-semibold text-slate-800">
+                              {rawScore.toFixed(1)} / {maxScore}
+                            </p>
+                          </div>
+                          <div className="p-2 bg-accent-50 rounded-lg border border-accent-200">
+                            <p className="text-xs text-accent-600 mb-1">النقاط المرجحة</p>
+                            <p className="text-sm font-bold text-accent-700">
+                              {(rawScore * weight).toFixed(1)} / {(maxScore * weight).toFixed(1)}
+                            </p>
+                          </div>
+                          <div className="p-2 bg-white rounded-lg border border-slate-200">
+                            <p className="text-xs text-slate-500 mb-1">النسبة</p>
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${getScoreColor(percentage)}`}>
+                              {percentage}%
+                            </span>
+                          </div>
                         </div>
-                        <div className="p-2 bg-white rounded-lg border border-slate-200">
-                          <p className="text-xs text-slate-500 mb-1">النقاط الخام</p>
-                          <p className="text-sm font-semibold text-slate-800">
-                            {rawScore.toFixed(1)} / {maxScore}
-                          </p>
-                        </div>
-                        <div className="p-2 bg-accent-50 rounded-lg border border-accent-200">
-                          <p className="text-xs text-accent-600 mb-1">النقاط المرجحة</p>
-                          <p className="text-sm font-bold text-accent-700">
-                            {(rawScore * weight).toFixed(1)} / {(maxScore * weight).toFixed(1)}
-                          </p>
-                        </div>
-                        <div className="p-2 bg-white rounded-lg border border-slate-200">
-                          <p className="text-xs text-slate-500 mb-1">النسبة</p>
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${getScoreColor(percentage)}`}>
-                            {percentage}%
-                          </span>
-                        </div>
-                      </div>
+                      )}
 
-                      {/* Progress Bar */}
-                      <div className="mt-2">
-                        <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                          <div 
-                            className={`h-full rounded-full transition-all duration-500 ${
-                              percentage >= 70 ? 'bg-success-500' :
-                              percentage >= 40 ? 'bg-warning-500' : 'bg-danger-500'
-                            }`}
-                            style={{ width: `${Math.min(100, percentage)}%` }}
-                          ></div>
+                      {/* Progress Bar - Admin only */}
+                      {isAdmin && (
+                        <div className="mt-2">
+                          <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                            <div 
+                              className={`h-full rounded-full transition-all duration-500 ${
+                                percentage >= 70 ? 'bg-success-500' :
+                                percentage >= 40 ? 'bg-warning-500' : 'bg-danger-500'
+                              }`}
+                              style={{ width: `${Math.min(100, percentage)}%` }}
+                            ></div>
+                          </div>
                         </div>
-                      </div>
+                      )}
+
+                      {/* Rationale and Common Errors - MCQ Questions Only */}
+                      {response.question_type === 'mcq' && response.assessment_metadata && (
+                        <div className="mt-4 space-y-3">
+                          {/* Rationale */}
+                          {response.assessment_metadata.rationale && (
+                            <div className="p-3 bg-emerald-50 rounded-lg border border-emerald-200">
+                              <div className="flex items-center gap-2 mb-2">
+                                <LightBulbIcon className="w-4 h-4 text-emerald-600" />
+                                <span className="text-sm font-semibold text-emerald-700">تبرير الإجابة الصحيحة:</span>
+                              </div>
+                              <p className="text-sm text-slate-700 leading-relaxed">{response.assessment_metadata.rationale}</p>
+                            </div>
+                          )}
+
+                          {/* Common Errors */}
+                          {response.assessment_metadata.common_errors && (
+                            <div className="p-3 bg-amber-50 rounded-lg border border-amber-200">
+                              <div className="flex items-center gap-2 mb-2">
+                                <InformationCircleIcon className="w-4 h-4 text-amber-600" />
+                                <span className="text-sm font-semibold text-amber-700">الأخطاء الشائعة:</span>
+                              </div>
+                              <p className="text-sm text-slate-700 leading-relaxed">{response.assessment_metadata.common_errors}</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -433,8 +549,8 @@ export default function ResultDetail() {
             })}
           </div>
 
-          {/* Recalculate Button at Bottom OR Grading Complete Message */}
-          {hasUngradedQuestions ? (
+          {/* Recalculate Button at Bottom OR Grading Complete Message - Admin only */}
+          {isAdmin && hasUngradedQuestions ? (
             <div className="mt-6 pt-4 border-t border-slate-200 flex justify-center">
               <button
                 onClick={handleRecalculateGrade}
@@ -444,7 +560,7 @@ export default function ResultDetail() {
                 {recalculating ? 'جاري إعادة الحساب...' : 'إعادة حساب الدرجة النهائية'}
               </button>
             </div>
-          ) : responses.some(r => r.question_type === 'open_text') && (
+          ) : isAdmin && responses.some(r => r.question_type === 'open_text') && (
             <div className="mt-6 pt-4 border-t border-slate-200 flex justify-center">
               <div className="flex items-center gap-2 text-success-600 bg-success-50 px-4 py-2 rounded-lg">
                 <CheckCircleIcon className="w-5 h-5" />
@@ -455,8 +571,8 @@ export default function ResultDetail() {
         </motion.div>
       )}
 
-      {/* Weighted Score Breakdown (for non-admin or when no responses loaded) */}
-      {(!isAdmin || responses.length === 0) && weightedBreakdown.length > 0 && (
+      {/* Weighted Score Breakdown (only for admin when no responses loaded) */}
+      {isAdmin && responses.length === 0 && weightedBreakdown.length > 0 && (
         <WeightedScoreBreakdown breakdown={weightedBreakdown} totals={weightedTotals} />
       )}
 

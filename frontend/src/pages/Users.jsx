@@ -235,9 +235,30 @@ export default function Users() {
     setBulkUploading(true);
     try {
       const response = await uploadUsersCSV(bulkFile);
-      setBulkResult(response.data);
-      toast.success('تم استيراد المستخدمين من الملف بنجاح');
+      const result = response.data;
+      setBulkResult(result);
+      
+      // Show appropriate toast based on email sending results
+      if (result.createdCount === 0) {
+        toast.error('لم يتم إنشاء أي مستخدم. تحقق من البيانات في الملف.');
+      } else if (result.invitationsSentCount === result.createdCount) {
+        // All emails sent successfully
+        toast.success(`تم إنشاء ${result.createdCount} مستخدم وإرسال جميع الدعوات بنجاح`);
+      } else if (result.invitationsSentCount > 0 && result.invitationsFailedCount > 0) {
+        // Some emails sent, some failed
+        toast.success(`تم إنشاء ${result.createdCount} مستخدم`);
+        toast.error(`فشل إرسال ${result.invitationsFailedCount} دعوة من أصل ${result.createdCount}`);
+      } else if (result.invitationsFailedCount === result.createdCount) {
+        // All emails failed
+        toast.success(`تم إنشاء ${result.createdCount} مستخدم`);
+        toast.error('فشل إرسال جميع الدعوات! تحقق من إعدادات البريد الإلكتروني.');
+      } else {
+        // Fallback
+        toast.success('تم استيراد المستخدمين من الملف');
+      }
+      
       fetchUsers();
+      fetchInvitations();
     } catch (error) {
       toast.error(error.response?.data?.error || 'فشل في استيراد الملف');
     } finally {
@@ -756,19 +777,25 @@ export default function Users() {
                   <p className="text-emerald-700">
                     تم إنشاء: {bulkResult.createdCount} مستخدم
                   </p>
-                  {bulkResult.invitationsSentCount > 0 && (
-                    <p className="text-blue-700">
-                      تم إرسال الدعوات: {bulkResult.invitationsSentCount} دعوة
-                    </p>
+                  
+                  {/* Email Status - Always show when users were created */}
+                  {bulkResult.createdCount > 0 && (
+                    <div className="border-t border-slate-200 pt-2 mt-2">
+                      <p className="font-medium text-slate-700 mb-1">حالة إرسال الدعوات:</p>
+                      <p className={bulkResult.invitationsSentCount > 0 ? "text-emerald-700" : "text-slate-500"}>
+                        ✉️ تم الإرسال: {bulkResult.invitationsSentCount || 0} دعوة
+                      </p>
+                      <p className={bulkResult.invitationsFailedCount > 0 ? "text-danger-700 font-medium" : "text-slate-500"}>
+                        ❌ فشل الإرسال: {bulkResult.invitationsFailedCount || 0} دعوة
+                      </p>
+                    </div>
                   )}
-                  {bulkResult.invitationsFailedCount > 0 && (
+                  
+                  {bulkResult.skippedCount > 0 && (
                     <p className="text-amber-700">
-                      فشل إرسال الدعوات: {bulkResult.invitationsFailedCount} دعوة
+                      تم تخطي: {bulkResult.skippedCount} صف
                     </p>
                   )}
-                  <p className="text-amber-700">
-                    تم تخطي: {bulkResult.skippedCount} صف
-                  </p>
                   {bulkResult.errorCount > 0 && (
                     <p className="text-danger-700">
                       أخطاء: {bulkResult.errorCount} صف

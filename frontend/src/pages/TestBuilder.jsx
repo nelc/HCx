@@ -10,6 +10,9 @@ import {
   SparklesIcon,
   PencilSquareIcon,
   CpuChipIcon,
+  AcademicCapIcon,
+  LightBulbIcon,
+  InformationCircleIcon,
 } from '@heroicons/react/24/outline';
 import { Disclosure, Tab } from '@headlessui/react';
 import toast from 'react-hot-toast';
@@ -29,6 +32,15 @@ const difficultyLevels = [
   { value: 'advanced', label: 'متقدم', color: 'bg-rose-100 text-rose-700' },
   { value: 'mix', label: 'مزيج', color: 'bg-violet-100 text-violet-700' },
 ];
+
+// Cognitive levels for Bloom's Taxonomy
+const cognitiveLevels = {
+  knowledge: { label: 'معرفة', color: 'bg-sky-100 text-sky-700', icon: '📚' },
+  application: { label: 'تطبيق', color: 'bg-emerald-100 text-emerald-700', icon: '⚙️' },
+  analysis: { label: 'تحليل', color: 'bg-amber-100 text-amber-700', icon: '🔍' },
+  evaluation: { label: 'تقييم', color: 'bg-rose-100 text-rose-700', icon: '⚖️' },
+  self_assessment: { label: 'تقييم ذاتي', color: 'bg-violet-100 text-violet-700', icon: '🎯' },
+};
 
 export default function TestBuilder() {
   const { id } = useParams();
@@ -393,6 +405,7 @@ export default function TestBuilder() {
           required: q.required,
           weight: q.weight,
           order_index: i + 1,
+          assessment_metadata: q.assessment_metadata || null,
         };
         
         if (q.id && !q.id.startsWith('new-') && !q.id.startsWith('ai-')) {
@@ -800,6 +813,13 @@ export default function TestBuilder() {
                         <span className="badge badge-primary text-xs">
                           {questionTypes.find(t => t.value === question.question_type)?.label}
                         </span>
+                        {/* Cognitive Level Badge */}
+                        {question.assessment_metadata?.cognitive_level && cognitiveLevels[question.assessment_metadata.cognitive_level] && (
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${cognitiveLevels[question.assessment_metadata.cognitive_level].color}`}>
+                            <span>{cognitiveLevels[question.assessment_metadata.cognitive_level].icon}</span>
+                            {cognitiveLevels[question.assessment_metadata.cognitive_level].label}
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         <div
@@ -954,6 +974,84 @@ export default function TestBuilder() {
                               <option value={5}>5 مستويات</option>
                               <option value={7}>7 مستويات</option>
                             </select>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Assessment Metadata Section - AI Generated Info */}
+                      {question.assessment_metadata && (
+                        <div className="mt-4 border-t border-slate-200 pt-4">
+                          <div className="flex items-center gap-2 mb-3">
+                            <AcademicCapIcon className="w-5 h-5 text-primary-500" />
+                            <h4 className="font-semibold text-primary-700">بيانات التقييم</h4>
+                            <span className="text-xs text-slate-400 mr-auto">(تم توليدها بالذكاء الاصطناعي)</span>
+                          </div>
+                          
+                          <div className="space-y-3">
+                            {/* Competency Measured */}
+                            {question.assessment_metadata.competency_measured && (
+                              <div className="bg-primary-50/50 rounded-lg p-3">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="text-sm font-medium text-primary-700">الكفاءة المقاسة:</span>
+                                </div>
+                                <p className="text-sm text-slate-700">{question.assessment_metadata.competency_measured}</p>
+                              </div>
+                            )}
+                            
+                            {/* Rationale - Only for MCQ */}
+                            {question.question_type === 'mcq' && question.assessment_metadata.rationale && (
+                              <div className="bg-success-50/50 rounded-lg p-3">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <LightBulbIcon className="w-4 h-4 text-success-600" />
+                                  <span className="text-sm font-medium text-success-700">تبرير الإجابة الصحيحة:</span>
+                                </div>
+                                <p className="text-sm text-slate-700">{question.assessment_metadata.rationale}</p>
+                              </div>
+                            )}
+                            
+                            {/* Common Errors - Only for MCQ */}
+                            {question.question_type === 'mcq' && question.assessment_metadata.common_errors && (
+                              <div className="bg-amber-50/50 rounded-lg p-3">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <InformationCircleIcon className="w-4 h-4 text-amber-600" />
+                                  <span className="text-sm font-medium text-amber-700">الأخطاء الشائعة:</span>
+                                </div>
+                                <p className="text-sm text-slate-700">{question.assessment_metadata.common_errors}</p>
+                              </div>
+                            )}
+                            
+                            {/* Rubric - Only for Open Text */}
+                            {question.question_type === 'open_text' && question.assessment_metadata.rubric && Array.isArray(question.assessment_metadata.rubric) && (
+                              <div className="bg-violet-50/50 rounded-lg p-3">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span className="text-sm font-medium text-violet-700">معايير التقييم:</span>
+                                </div>
+                                <div className="space-y-2">
+                                  {question.assessment_metadata.rubric.map((item, rubricIdx) => (
+                                    <div key={rubricIdx} className="flex items-start gap-2 text-sm">
+                                      <span className="bg-violet-200 text-violet-700 px-2 py-0.5 rounded text-xs font-medium shrink-0">
+                                        {item.points} نقاط
+                                      </span>
+                                      <div>
+                                        <span className="font-medium text-slate-700">{item.criterion}:</span>
+                                        <span className="text-slate-600 mr-1">{item.description}</span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            
+                            {/* Cognitive Level */}
+                            {question.assessment_metadata.cognitive_level && cognitiveLevels[question.assessment_metadata.cognitive_level] && (
+                              <div className="flex items-center gap-2 text-sm">
+                                <span className="text-slate-600">المستوى المعرفي:</span>
+                                <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ${cognitiveLevels[question.assessment_metadata.cognitive_level].color}`}>
+                                  <span>{cognitiveLevels[question.assessment_metadata.cognitive_level].icon}</span>
+                                  {cognitiveLevels[question.assessment_metadata.cognitive_level].label}
+                                </span>
+                              </div>
+                            )}
                           </div>
                         </div>
                       )}

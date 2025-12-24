@@ -42,3 +42,17 @@ NEO4J_IS_PROD=false
 LEARNER_SKILLS_BASE_URL=https://api-test.nelc.gov.sa/learner-skills/v1
 LEARNER_SKILLS_TOKEN_URL=https://api-test.nelc.gov.sa/oauth2/v1/token
 
+# ============================================
+# Gmail SMTP Configuration (for sending invitation emails)
+# ============================================
+# How to get App Password:
+# 1. Go to https://myaccount.google.com/
+# 2. Enable 2-Step Verification
+# 3. Go to https://myaccount.google.com/apppasswords
+# 4. Generate app password for "Mail" and "Other (Custom name)"
+# 5. Copy the 16-character password (no spaces)
+# ============================================
+GMAIL_USER=your-email@gmail.com
+GMAIL_APP_PASSWORD=your_16_character_app_password
+GMAIL_FROM_EMAIL=your-email@gmail.com
+

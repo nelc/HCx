@@ -301,13 +301,14 @@ async function updateCourseNode(courseData) {
  * Get course recommendations for a user using graph traversal
  * Matches User -NEEDS-> Skill <-TEACHES- Course
  * Returns courses ranked by relevance score (gap_score * relevance_score)
+ * PRIORITIZES English skill names (s.name_en) in output
  */
 async function getRecommendationsForUser(userId, limit = 10) {
   const query = `
     MATCH (u:User {user_id: '${userId}'})-[n:NEEDS]->(s:Skill)<-[t:TEACHES]-(c:Course)
     WITH c, s, n, t, (n.gap_score * t.relevance_score) as match_score
     WITH c, 
-         collect(DISTINCT s.name_ar) as matching_skills,
+         collect(DISTINCT COALESCE(s.name_en, s.name_ar)) as matching_skills,
          SUM(match_score) as base_score,
          count(DISTINCT s) as skill_coverage,
          MAX(n.priority) as max_priority
@@ -318,6 +319,7 @@ async function getRecommendationsForUser(userId, limit = 10) {
       c.name_ar as name_ar,
       c.name_en as name_en,
       c.description_ar as description_ar,
+      c.description_en as description_en,
       c.url as url,
       c.provider as provider,
       c.duration_hours as duration_hours,
@@ -402,6 +404,7 @@ function getValidDifficultyLevels(difficulty) {
  * - Skill match through graph relationships (Course -TEACHES-> Skill <-NEEDS- User)
  * - Difficulty level based on skill proficiency (users can see courses at or below their level)
  * Returns courses ranked by relevance score (gap_score * relevance_score)
+ * PRIORITIZES English skill names (s.name_en) in matching output
  */
 async function getEnhancedRecommendationsForUser(userId, skillRequirements, synonymMap = {}, limit = 10) {
   // Build WHERE conditions for each skill with flexible difficulty matching
@@ -411,12 +414,12 @@ async function getEnhancedRecommendationsForUser(userId, skillRequirements, syno
   const skillConditions = Object.entries(skillRequirements).map(([skillId, req]) => {
     // Get all valid difficulty levels for this user's proficiency
     const validLevels = getValidDifficultyLevels(req.difficulty);
-    const difficultyCondition = validLevels.map(level => `c.difficulty_level = '${level}'`).join(' OR ');
+    const difficultyCondition = validLevels.map(level => `toLower(c.difficulty_level) = '${level}'`).join(' OR ');
     
     return `(
       s.skill_id = '${skillId}' 
       AND n.gap_score > 0
-      AND (${difficultyCondition})
+      AND (${difficultyCondition} OR c.difficulty_level IS NULL OR c.difficulty_level = '')
     )`;
   }).join(' OR ');
 
@@ -425,12 +428,13 @@ async function getEnhancedRecommendationsForUser(userId, skillRequirements, syno
     return [];
   }
 
+  // Query prioritizes English skill names in output using COALESCE
   const query = `
     MATCH (u:User {user_id: '${userId}'})-[n:NEEDS]->(s:Skill)<-[t:TEACHES]-(c:Course)
     WHERE ${skillConditions}
     WITH c, s, n, t, (n.gap_score * t.relevance_score) as match_score
     WITH c, 
-         collect(DISTINCT s.name_ar) as matching_skills,
+         collect(DISTINCT COALESCE(s.name_en, s.name_ar)) as matching_skills,
          SUM(match_score) as base_score,
          count(DISTINCT s) as skill_coverage,
          MAX(n.priority) as max_priority
@@ -441,6 +445,7 @@ async function getEnhancedRecommendationsForUser(userId, skillRequirements, syno
       c.name_ar as name_ar,
       c.name_en as name_en,
       c.description_ar as description_ar,
+      c.description_en as description_en,
       c.url as url,
       c.provider as provider,
       c.duration_hours as duration_hours,
@@ -464,7 +469,7 @@ async function getEnhancedRecommendationsForUser(userId, skillRequirements, syno
     LIMIT ${limit}
   `;
   
-  console.log('📊 Enhanced Neo4j Query:', query);
+  console.log('📊 Enhanced Neo4j Query (English-first skills):', query);
   
   return await makeRequest('POST', '/query', {
     data: { query }
@@ -972,6 +977,8 @@ async function createExtractedSkillRelationships(courseId, skills) {
 /**
  * Get course recommendations based on user interests (skills/topics)
  * Searches courses that teach skills matching the user's interests
+ * PRIORITIZES English field matching: c.name_en, c.subject, s.name_en
+ * Falls back to Arabic fields for matching
  * @param {Array} interests - Array of interest strings in format "subjectId:skillName"
  * @param {number} limit - Maximum courses to return
  * @returns {Promise<Array>} Array of course recommendations
@@ -992,15 +999,18 @@ async function getRecommendationsByInterests(interests, limit = 10) {
   }
 
   // Build WHERE conditions for skill matching
+  // PRIORITIZE English fields: c.name_en, c.subject (usually English), s.name_en
+  // Then fallback to Arabic fields
   const skillConditions = skillNames.map(skill => {
     const escaped = skill.replace(/'/g, "\\'");
     return `(
-      toLower(c.name_ar) CONTAINS toLower('${escaped}') OR
       toLower(c.name_en) CONTAINS toLower('${escaped}') OR
-      toLower(c.description_ar) CONTAINS toLower('${escaped}') OR
       toLower(c.subject) CONTAINS toLower('${escaped}') OR
-      toLower(s.name_ar) CONTAINS toLower('${escaped}') OR
-      toLower(s.name_en) CONTAINS toLower('${escaped}')
+      toLower(s.name_en) CONTAINS toLower('${escaped}') OR
+      toLower(c.description_en) CONTAINS toLower('${escaped}') OR
+      toLower(c.name_ar) CONTAINS toLower('${escaped}') OR
+      toLower(c.description_ar) CONTAINS toLower('${escaped}') OR
+      toLower(s.name_ar) CONTAINS toLower('${escaped}')
     )`;
   }).join(' OR ');
 
@@ -1009,13 +1019,14 @@ async function getRecommendationsByInterests(interests, limit = 10) {
     OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
     WHERE ${skillConditions}
     WITH c, 
-         collect(DISTINCT s.name_ar) as matching_skills,
+         collect(DISTINCT COALESCE(s.name_en, s.name_ar)) as matching_skills,
          count(DISTINCT s) as skill_coverage
     RETURN DISTINCT
       c.course_id as course_id,
       c.name_ar as name_ar,
       c.name_en as name_en,
       c.description_ar as description_ar,
+      c.description_en as description_en,
       c.url as url,
       c.provider as provider,
       c.duration_hours as duration_hours,
@@ -1035,7 +1046,7 @@ async function getRecommendationsByInterests(interests, limit = 10) {
     LIMIT ${limit}
   `;
 
-  console.log('🎯 Neo4j Interests Query:', query);
+  console.log('🎯 Neo4j Interests Query (English-first):', query);
 
   try {
     return await makeRequest('POST', '/query', {
@@ -1050,7 +1061,9 @@ async function getRecommendationsByInterests(interests, limit = 10) {
 /**
  * Get course recommendations based on desired domains (career aspirations)
  * Searches courses that belong to or relate to the user's desired career domains
+ * PRIORITIZES English domain names for matching against course subject (usually English)
  * @param {Array} domainIds - Array of domain IDs
+ * @param {Array} domainNames - Array of domain objects with name_ar and name_en
  * @param {number} limit - Maximum courses to return
  * @returns {Promise<Array>} Array of course recommendations
  */
@@ -1060,19 +1073,32 @@ async function getRecommendationsByDomains(domainIds, domainNames, limit = 10) {
   }
 
   // Build WHERE conditions for domain matching using domain names
+  // PRIORITIZE English domain names (name_en) for matching against course.subject
   let domainConditions = 'false'; // Default to false if no conditions
   
   if (domainNames && domainNames.length > 0) {
     const conditions = domainNames.map(domain => {
-      const escaped = (domain.name_ar || domain.name_en || '').replace(/'/g, "\\'");
+      // Prioritize English name for matching
       const escapedEn = (domain.name_en || '').replace(/'/g, "\\'");
-      return `(
-        toLower(c.subject) CONTAINS toLower('${escaped}') OR
-        toLower(c.subject) CONTAINS toLower('${escapedEn}') OR
-        toLower(c.name_ar) CONTAINS toLower('${escaped}') OR
-        toLower(c.name_en) CONTAINS toLower('${escapedEn}') OR
-        toLower(c.description_ar) CONTAINS toLower('${escaped}')
-      )`;
+      const escapedAr = (domain.name_ar || '').replace(/'/g, "\\'");
+      
+      // Build condition - English matches first (higher priority), then Arabic fallback
+      const parts = [];
+      
+      if (escapedEn) {
+        // English domain name matches against English course fields (primary)
+        parts.push(`toLower(c.subject) CONTAINS toLower('${escapedEn}')`);
+        parts.push(`toLower(c.name_en) CONTAINS toLower('${escapedEn}')`);
+        parts.push(`toLower(c.description_en) CONTAINS toLower('${escapedEn}')`);
+      }
+      
+      if (escapedAr) {
+        // Arabic domain name matches against Arabic course fields (fallback)
+        parts.push(`toLower(c.name_ar) CONTAINS toLower('${escapedAr}')`);
+        parts.push(`toLower(c.description_ar) CONTAINS toLower('${escapedAr}')`);
+      }
+      
+      return parts.length > 0 ? `(${parts.join(' OR ')})` : null;
     }).filter(c => c);
     
     if (conditions.length > 0) {
@@ -1085,13 +1111,14 @@ async function getRecommendationsByDomains(domainIds, domainNames, limit = 10) {
     WHERE ${domainConditions}
     OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
     WITH c, 
-         collect(DISTINCT s.name_ar) as related_skills,
+         collect(DISTINCT COALESCE(s.name_en, s.name_ar)) as related_skills,
          count(DISTINCT s) as skill_coverage
     RETURN DISTINCT
       c.course_id as course_id,
       c.name_ar as name_ar,
       c.name_en as name_en,
       c.description_ar as description_ar,
+      c.description_en as description_en,
       c.url as url,
       c.provider as provider,
       c.duration_hours as duration_hours,
@@ -1111,7 +1138,7 @@ async function getRecommendationsByDomains(domainIds, domainNames, limit = 10) {
     LIMIT ${limit}
   `;
 
-  console.log('🚀 Neo4j Career Domains Query:', query);
+  console.log('🚀 Neo4j Career Domains Query (English-first):', query);
 
   try {
     return await makeRequest('POST', '/query', {

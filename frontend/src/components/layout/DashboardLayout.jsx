@@ -23,6 +23,7 @@ import {
 import useAuthStore from '../../store/authStore';
 import { getInitials, getRoleLabel } from '../../utils/helpers';
 import api from '../../utils/api';
+import WelcomeModal from '../WelcomeModal';
 
 const adminNavItems = [
   { name: 'لوحة التحكم', path: '/dashboard', icon: HomeIcon },
@@ -59,9 +60,17 @@ export default function DashboardLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showWelcomeModal, setShowWelcomeModal] = useState(false);
   const { user, logout } = useAuthStore();
   const location = useLocation();
   const navigate = useNavigate();
+
+  // Show welcome modal for employees who haven't completed their profile
+  useEffect(() => {
+    if (user?.role === 'employee' && user?.profile_completed === false) {
+      setShowWelcomeModal(true);
+    }
+  }, [user]);
 
   // Get navigation items based on role
   const getNavItems = () => {
@@ -293,6 +302,13 @@ export default function DashboardLayout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Welcome Modal for first-time employees */}
+      <WelcomeModal
+        isOpen={showWelcomeModal}
+        userName={user?.name_ar}
+        onClose={() => setShowWelcomeModal(false)}
+      />
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   UserCircleIcon,
@@ -280,7 +281,18 @@ const SKILLS_DATA = [
 
 export default function Settings() {
   const { user, updateUser } = useAuthStore();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState('profile');
+
+  // Read tab from URL params on mount
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam && ['profile', 'employee-profile', 'cv-import', 'security'].includes(tabParam)) {
+      setActiveTab(tabParam);
+      // Clear the URL param after reading
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
   
   const [passwordForm, setPasswordForm] = useState({
     currentPassword: '',
@@ -364,7 +376,11 @@ export default function Settings() {
 
     setSavingProfile(true);
     try {
-      await api.put('/users/profile/me', employeeProfile);
+      const response = await api.put('/users/profile/me', employeeProfile);
+      // Update auth store with profile_completed flag
+      if (response.data.profile_completed) {
+        updateUser({ profile_completed: true });
+      }
       toast.success('تم حفظ الملف الشخصي بنجاح');
     } catch (error) {
       toast.error(error.response?.data?.error || 'فشل في حفظ الملف الشخصي');
@@ -613,7 +629,7 @@ export default function Settings() {
               </div>
               
               <p className="text-sm text-slate-400 mt-6">
-                للتعديل على بياناتك، يرجى التواصل مع مدير النظام
+                للتعديل على بياناتك، يرجى التواصل مع مدير النظام على البريد الإلكتروني: hcx@elc.edu.sa
               </p>
             </motion.div>
           )}
@@ -812,10 +828,7 @@ export default function Settings() {
 
                   {/* Desired Domains - Career Aspirations */}
                   <div>
-                    <label className="label">ما الأدوار الوظيفية التي تشعر أنها الأقرب لتطلعاتك المهنية القادمة؟</label>
-                    <p className="text-sm text-slate-500 mb-3">
-                      What roles do you wish to occupy in the future? (اختر المجالات التي ترغب في العمل بها مستقبلاً)
-                    </p>
+                    <label className="label">ما المجالات الوظيفية التي تشعر أنها الأقرب لتطلعاتك المهنية القادمة؟ ليس بالضرورة أن تكون امتدادً لمهنتك الحالية.</label>
                     
                     {loadingDomains ? (
                       <div className="flex justify-center items-center py-6">

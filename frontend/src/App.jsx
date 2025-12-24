@@ -27,6 +27,8 @@ import ResultsOverview from './pages/ResultsOverview';
 import Courses from './pages/Courses';
 import AcceptInvitation from './pages/AcceptInvitation';
 import Reports from './pages/Reports';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 
 // Protected Route Component
 function ProtectedRoute({ children, allowedRoles }) {
@@ -120,6 +122,14 @@ function App() {
         <Routes location={location} key={location.pathname}>
           <Route path="/login" element={
             isAuthenticated ? <Navigate to="/dashboard" replace /> : <Login />
+          } />
+          
+          <Route path="/forgot-password" element={
+            isAuthenticated ? <Navigate to="/dashboard" replace /> : <ForgotPassword />
+          } />
+          
+          <Route path="/reset-password/:token" element={
+            isAuthenticated ? <Navigate to="/dashboard" replace /> : <ResetPassword />
           } />
           
           <Route path="/accept-invitation/:token" element={<AcceptInvitation />} />

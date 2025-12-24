@@ -325,20 +325,21 @@ export default function Courses() {
     setSelectedCourse(null);
   };
 
-  // Admin: Toggle course hidden status
-  const handleToggleHidden = async (course) => {
+  // Admin: Toggle course visibility for employees (whitelist approach)
+  // Courses are hidden by default - toggle adds/removes from visible_courses whitelist
+  const handleToggleVisibility = async (course) => {
     if (!course.id) {
       toast.error('معرف الدورة غير متوفر');
       return;
     }
 
     setTogglingHidden(course.id);
-    const isCurrentlyHidden = course.is_hidden;
-    const toastId = toast.loading(isCurrentlyHidden ? 'جاري إظهار الدورة...' : 'جاري إخفاء الدورة...');
+    const isCurrentlyVisible = course.is_visible;
+    const toastId = toast.loading(isCurrentlyVisible ? 'جاري إخفاء الدورة...' : 'جاري إظهار الدورة للموظفين...');
 
     try {
       const response = await api.post(`/courses/neo4j/${course.id}/toggle-hidden`, {
-        hidden: !isCurrentlyHidden
+        visible: !isCurrentlyVisible
       });
       
       toast.dismiss(toastId);
@@ -346,11 +347,11 @@ export default function Courses() {
 
       // Update local state
       setCourses(prev => prev.map(c => 
-        c.id === course.id ? { ...c, is_hidden: response.data.hidden } : c
+        c.id === course.id ? { ...c, is_visible: response.data.visible } : c
       ));
     } catch (error) {
       toast.dismiss(toastId);
-      console.error('Toggle hidden error:', error);
+      console.error('Toggle visibility error:', error);
       toast.error(error.response?.data?.message || 'فشل في تغيير حالة الدورة');
     } finally {
       setTogglingHidden(null);
@@ -613,13 +614,13 @@ export default function Courses() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 className={`card p-6 hover:shadow-lg transition-shadow ${
-                  course.is_hidden ? 'bg-gray-50 border-gray-300 opacity-75' : ''
+                  !course.is_visible ? 'bg-gray-50 border-gray-300 opacity-75' : ''
                 }`}
               >
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2 flex-wrap">
-                      <h3 className={`text-lg font-semibold ${course.is_hidden ? 'text-slate-400' : 'text-slate-800'}`}>
+                      <h3 className={`text-lg font-semibold ${!course.is_visible ? 'text-slate-400' : 'text-slate-800'}`}>
                         {course.name_ar}
                       </h3>
                       {/* Domain badges next to title */}
@@ -635,11 +636,17 @@ export default function Courses() {
                           </span>
                         ))
                       )}
-                      {/* Hidden badge */}
-                      {isAdmin && course.is_hidden && (
+                      {/* Visibility badge - show "visible" for visible courses, "hidden" for hidden */}
+                      {isAdmin && course.is_visible && (
+                        <span className="px-2 py-1 text-xs font-medium rounded bg-green-100 text-green-700 flex items-center gap-1">
+                          <EyeIcon className="w-3 h-3" />
+                          ظاهر للموظفين
+                        </span>
+                      )}
+                      {isAdmin && !course.is_visible && (
                         <span className="px-2 py-1 text-xs font-medium rounded bg-gray-200 text-gray-600 flex items-center gap-1">
                           <EyeSlashIcon className="w-3 h-3" />
-                          مخفي
+                          مخفي عن الموظفين
                         </span>
                       )}
                       <span className={`px-2 py-1 text-xs font-medium rounded ${getDifficultyColor(course.difficulty_level)}`}>
@@ -829,24 +836,24 @@ export default function Courses() {
                         <TrashIcon className="w-5 h-5" />
                       </button>
                     )}
-                    {/* Admin: Hide/Unhide button */}
+                    {/* Admin: Toggle visibility for employees button */}
                     {isAdmin && (
                       <button
-                        onClick={() => handleToggleHidden(course)}
+                        onClick={() => handleToggleVisibility(course)}
                         disabled={togglingHidden === course.id}
                         className={`p-2 rounded-lg transition-colors border ${
-                          course.is_hidden
-                            ? 'text-gray-600 hover:bg-gray-50 border-gray-300 bg-gray-100'
-                            : 'text-green-600 hover:bg-green-50 border-green-200'
+                          course.is_visible
+                            ? 'text-green-600 hover:bg-green-50 border-green-200 bg-green-50'
+                            : 'text-gray-600 hover:bg-gray-50 border-gray-300 bg-gray-100'
                         } ${togglingHidden === course.id ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        title={course.is_hidden ? 'إظهار الدورة (مخفية حالياً)' : 'إخفاء الدورة'}
+                        title={course.is_visible ? 'إخفاء الدورة عن الموظفين (ظاهرة حالياً)' : 'إظهار الدورة للموظفين (مخفية حالياً)'}
                       >
                         {togglingHidden === course.id ? (
                           <ArrowPathIcon className="w-5 h-5 animate-spin" />
-                        ) : course.is_hidden ? (
-                          <EyeSlashIcon className="w-5 h-5" />
-                        ) : (
+                        ) : course.is_visible ? (
                           <EyeIcon className="w-5 h-5" />
+                        ) : (
+                          <EyeSlashIcon className="w-5 h-5" />
                         )}
                       </button>
                     )}

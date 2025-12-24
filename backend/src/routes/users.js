@@ -317,20 +317,22 @@ router.post(
           });
 
           // Send invitation email
+          console.log(`📧 [CSV Upload] Attempting to send invitation email to: ${email} (row ${rowNumber})`);
           try {
             await sendInvitationEmail(email, name_ar, token);
+            console.log(`✅ [CSV Upload] Invitation email sent successfully to: ${email}`);
             invitationsSent.push({
               rowNumber,
               email,
               name_ar,
             });
           } catch (emailError) {
-            console.error(`Failed to send invitation email to ${email}:`, emailError);
+            console.error(`❌ [CSV Upload] Failed to send invitation email to ${email}:`, emailError.message);
             invitationsFailed.push({
               rowNumber,
               email,
               name_ar,
-              error: 'فشل في إرسال البريد الإلكتروني',
+              error: emailError.message || 'فشل في إرسال البريد الإلكتروني',
             });
           }
 
@@ -343,6 +345,14 @@ router.post(
             error: err.message,
           });
         }
+      }
+
+      // Log summary
+      console.log(`📊 [CSV Upload] Summary: Total=${rows.length}, Created=${created.length}, Skipped=${skipped.length}, Errors=${errors.length}`);
+      console.log(`📧 [CSV Upload] Emails: Sent=${invitationsSent.length}, Failed=${invitationsFailed.length}`);
+      
+      if (invitationsFailed.length > 0) {
+        console.warn(`⚠️ [CSV Upload] Failed email recipients:`, invitationsFailed.map(f => f.email).join(', '));
       }
 
       res.json({
@@ -583,11 +593,12 @@ router.put('/profile/me', authenticate, [
           last_qualification_ar = COALESCE($5, last_qualification_ar),
           last_qualification_en = COALESCE($6, last_qualification_en),
           willing_to_change_career = COALESCE($7, willing_to_change_career),
-          desired_domains = COALESCE($8, desired_domains)
+          desired_domains = COALESCE($8, desired_domains),
+          profile_completed = true
       WHERE id = $9
       RETURNING years_of_experience, interests, specialization_ar, specialization_en,
                 last_qualification_ar, last_qualification_en, willing_to_change_career,
-                desired_domains
+                desired_domains, profile_completed
     `, [
       years_of_experience, 
       interests ? JSON.stringify(interests) : null,

@@ -1,13 +1,56 @@
 const nodemailer = require('nodemailer');
+const { normalizeEmailAddress } = require('./emailUtils');
 
-// Create reusable transporter using Gmail SMTP
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD,
-  },
-});
+// Initialize Gmail transporter with improved configuration
+let transporter = null;
+let isTransporterVerified = false;
+
+if (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
+  console.log('📧 Initializing Gmail transporter...');
+  console.log('   User:', process.env.GMAIL_USER);
+  
+  transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 587,
+    secure: false, // true for 465, false for 587
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_APP_PASSWORD,
+    },
+    tls: {
+      rejectUnauthorized: false
+    }
+  });
+  
+  // Verify connection on startup
+  transporter.verify((error, success) => {
+    if (error) {
+      console.error('❌ Gmail transporter verification failed:', error);
+      console.error('   Error code:', error.code);
+      console.error('   Error message:', error.message);
+      
+      // Common error hints
+      if (error.code === 'EAUTH') {
+        console.error('   💡 Hint: Authentication failed. Check your Gmail app password.');
+        console.error('   💡 Make sure 2-Step Verification is enabled on your Gmail account.');
+        console.error('   💡 Generate an App Password at: https://myaccount.google.com/apppasswords');
+      } else if (error.code === 'ECONNECTION') {
+        console.error('   💡 Hint: Connection failed. Check your internet connection.');
+      } else if (error.responseCode === 535) {
+        console.error('   💡 Hint: Invalid credentials. App password may be incorrect.');
+      }
+      
+      isTransporterVerified = false;
+    } else {
+      console.log('✅ Gmail transporter verified and ready');
+      isTransporterVerified = true;
+    }
+  });
+} else {
+  console.log('⚠️  Gmail credentials not found in environment variables');
+  console.log('   Required: GMAIL_USER and GMAIL_APP_PASSWORD');
+  console.log('   Email sending will be disabled.');
+}
 
 const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
 
@@ -38,7 +81,7 @@ function getEmailTemplate(title, content) {
           box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
         .header {
-          background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+          background: linear-gradient(135deg, #543192 0%, #442574 100%);
           padding: 40px 30px;
           text-align: center;
         }
@@ -50,17 +93,21 @@ function getEmailTemplate(title, content) {
         }
         .content {
           padding: 40px 30px;
+          text-align: right;
+          direction: rtl;
         }
         .greeting {
           font-size: 18px;
           color: #1e293b;
           margin-bottom: 20px;
+          text-align: right;
         }
         .message {
           color: #475569;
           line-height: 1.8;
           font-size: 16px;
           margin-bottom: 30px;
+          text-align: right;
         }
         .highlight-box {
           background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
@@ -68,6 +115,8 @@ function getEmailTemplate(title, content) {
           padding: 24px;
           margin: 20px 0;
           border-right: 4px solid #0ea5e9;
+          text-align: right;
+          direction: rtl;
         }
         .highlight-box.success {
           background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
@@ -104,14 +153,14 @@ function getEmailTemplate(title, content) {
         }
         .button {
           display: inline-block;
-          background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+          background: linear-gradient(135deg, #543192 0%, #442574 100%);
           color: #ffffff !important;
           text-decoration: none;
           padding: 16px 40px;
           border-radius: 12px;
           font-size: 16px;
           font-weight: 600;
-          box-shadow: 0 4px 14px rgba(139, 92, 246, 0.4);
+          box-shadow: 0 4px 14px rgba(84, 49, 146, 0.4);
         }
         .button.primary {
           background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
@@ -128,17 +177,21 @@ function getEmailTemplate(title, content) {
           margin-top: 30px;
           font-size: 14px;
           color: #64748b;
+          text-align: right;
+          direction: rtl;
         }
         .note-title {
           color: #475569;
           font-weight: 600;
           margin-bottom: 8px;
+          text-align: right;
         }
         .footer {
           background-color: #f8fafc;
           padding: 25px 30px;
           text-align: center;
           border-top: 1px solid #e2e8f0;
+          direction: rtl;
         }
         .footer p {
           color: #94a3b8;
@@ -168,7 +221,7 @@ function getEmailTemplate(title, content) {
     <body>
       <div class="container">
         <div class="header">
-          <h1>${title}</h1>
+          <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 600;">${title}</h1>
         </div>
         ${content}
         <div class="footer">
@@ -190,12 +243,19 @@ function getEmailTemplate(title, content) {
 async function sendInvitationEmail(email, name, token) {
   const invitationLink = `${frontendUrl}/accept-invitation/${token}`;
   
+  // Normalize email addresses to prevent Punycode encoding issues
+  const normalizedTo = normalizeEmailAddress(email, true);
+  const normalizedFrom = normalizeEmailAddress(
+    process.env.GMAIL_FROM_EMAIL || process.env.GMAIL_USER || '',
+    false
+  );
+  
   const mailOptions = {
     from: {
       name: 'نظام تقييم الاحتياجات التدريبية',
-      address: process.env.GMAIL_USER,
+      address: normalizedFrom,
     },
-    to: email,
+    to: normalizedTo,
     subject: 'دعوة للانضمام إلى نظام تقييم الاحتياجات التدريبية',
     html: `
       <!DOCTYPE html>
@@ -220,7 +280,7 @@ async function sendInvitationEmail(email, name, token) {
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
           }
           .header {
-            background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+            background: linear-gradient(135deg, #543192 0%, #442574 100%);
             padding: 40px 30px;
             text-align: center;
           }
@@ -232,17 +292,21 @@ async function sendInvitationEmail(email, name, token) {
           }
           .content {
             padding: 40px 30px;
+            text-align: right;
+            direction: rtl;
           }
           .greeting {
             font-size: 18px;
             color: #1e293b;
             margin-bottom: 20px;
+            text-align: right;
           }
           .message {
             color: #475569;
             line-height: 1.8;
             font-size: 16px;
             margin-bottom: 30px;
+            text-align: right;
           }
           .button-container {
             text-align: center;
@@ -250,15 +314,15 @@ async function sendInvitationEmail(email, name, token) {
           }
           .button {
             display: inline-block;
-            background-color: #8b5cf6;
-            background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+            background-color: #543192;
+            background: linear-gradient(135deg, #543192 0%, #442574 100%);
             color: #ffffff !important;
             text-decoration: none;
             padding: 16px 40px;
             border-radius: 12px;
             font-size: 16px;
             font-weight: 600;
-            box-shadow: 0 4px 14px rgba(139, 92, 246, 0.4);
+            box-shadow: 0 4px 14px rgba(84, 49, 146, 0.4);
           }
           .note {
             background-color: #f8fafc;
@@ -267,17 +331,21 @@ async function sendInvitationEmail(email, name, token) {
             margin-top: 30px;
             font-size: 14px;
             color: #64748b;
+            text-align: right;
+            direction: rtl;
           }
           .note-title {
             color: #475569;
             font-weight: 600;
             margin-bottom: 8px;
+            text-align: right;
           }
           .footer {
             background-color: #f8fafc;
             padding: 25px 30px;
             text-align: center;
             border-top: 1px solid #e2e8f0;
+            direction: rtl;
           }
           .footer p {
             color: #94a3b8;
@@ -288,13 +356,15 @@ async function sendInvitationEmail(email, name, token) {
             word-break: break-all;
             color: #0ea5e9;
             font-size: 12px;
+            text-align: right;
+            direction: rtl;
           }
         </style>
       </head>
       <body>
         <div class="container">
           <div class="header">
-            <h1>نظام تقييم الاحتياجات التدريبية</h1>
+            <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 600;">نظام تقييم الاحتياجات التدريبية</h1>
           </div>
           
           <div class="content">
@@ -307,7 +377,7 @@ async function sendInvitationEmail(email, name, token) {
             </p>
             
             <div class="button-container">
-              <a href="${invitationLink}" class="button" style="display: inline-block; background-color: #8b5cf6; background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); color: #ffffff !important; text-decoration: none; padding: 16px 40px; border-radius: 12px; font-size: 16px; font-weight: 600;">قبول الدعوة</a>
+              <a href="${invitationLink}" class="button" style="display: inline-block; background-color: #543192; background: linear-gradient(135deg, #543192 0%, #442574 100%); color: #ffffff !important; text-decoration: none; padding: 16px 40px; border-radius: 12px; font-size: 16px; font-weight: 600;">قبول الدعوة</a>
             </div>
             
             <div class="note">
@@ -340,12 +410,40 @@ ${invitationLink}
     `.trim(),
   };
 
+  // Check if transporter is available
+  if (!transporter) {
+    console.warn('⚠️  No email service configured. Email sending is disabled.');
+    console.log('📧 Would send invitation email to:', normalizedTo);
+    console.log('🔗 Invitation link:', invitationLink);
+    throw new Error('Email service not configured. Please set GMAIL_USER and GMAIL_APP_PASSWORD environment variables.');
+  }
+
   try {
+    console.log('📧 Attempting to send invitation email via Gmail...');
+    console.log('   From:', normalizedFrom);
+    console.log('   To:', normalizedTo);
+    
     const result = await transporter.sendMail(mailOptions);
-    console.log('Invitation email sent successfully to:', email);
+    
+    console.log(`✅ Invitation email sent successfully to ${normalizedTo}`);
+    console.log('   Message ID:', result.messageId);
+    console.log('   Response:', result.response);
+    
     return { success: true, messageId: result.messageId };
   } catch (error) {
-    console.error('Failed to send invitation email:', error);
+    console.error('❌ Error sending invitation email via Gmail:');
+    console.error('   Error code:', error.code);
+    console.error('   Error message:', error.message);
+    
+    // Common Gmail errors with hints
+    if (error.code === 'EAUTH') {
+      console.error('   💡 Hint: Authentication failed. Check your Gmail app password.');
+    } else if (error.code === 'ECONNECTION') {
+      console.error('   💡 Hint: Connection failed. Check your internet connection.');
+    } else if (error.responseCode === 535) {
+      console.error('   💡 Hint: Invalid credentials. App password may be incorrect.');
+    }
+    
     throw new Error(`Failed to send invitation email: ${error.message}`);
   }
 }
@@ -355,14 +453,29 @@ ${invitationLink}
  * @returns {Promise<boolean>} - True if configuration is valid
  */
 async function verifyEmailConfig() {
-  try {
-    await transporter.verify();
-    console.log('Email service configured successfully');
-    return true;
-  } catch (error) {
-    console.error('Email service configuration error:', error);
+  if (!transporter) {
+    console.log('⚠️  Email transporter not initialized');
     return false;
   }
+  
+  try {
+    await transporter.verify();
+    console.log('✅ Email service configured successfully');
+    isTransporterVerified = true;
+    return true;
+  } catch (error) {
+    console.error('❌ Email service configuration error:', error.message);
+    isTransporterVerified = false;
+    return false;
+  }
+}
+
+/**
+ * Check if email service is ready
+ * @returns {boolean}
+ */
+function isEmailServiceReady() {
+  return transporter !== null && isTransporterVerified;
 }
 
 /**
@@ -373,8 +486,17 @@ async function verifyEmailConfig() {
  * @returns {Promise<object>}
  */
 async function sendTestAssignedEmail(email, name, testInfo) {
+  if (!transporter) {
+    console.warn('⚠️  Email service not configured. Skipping test assigned email.');
+    return { success: false, error: 'Email service not configured' };
+  }
+
   const assessmentLink = `${frontendUrl}/assessments`;
   const dueDate = testInfo.due_date ? new Date(testInfo.due_date).toLocaleDateString('ar-SA') : 'غير محدد';
+  
+  // Normalize email addresses
+  const normalizedTo = normalizeEmailAddress(email, false);
+  const normalizedFrom = normalizeEmailAddress(process.env.GMAIL_USER || '', false);
   
   const content = `
     <div class="content">
@@ -410,20 +532,21 @@ async function sendTestAssignedEmail(email, name, testInfo) {
   const mailOptions = {
     from: {
       name: 'نظام تقييم الاحتياجات التدريبية',
-      address: process.env.GMAIL_USER,
+      address: normalizedFrom,
     },
-    to: email,
+    to: normalizedTo,
     subject: `📋 تقييم جديد: ${testInfo.title_ar || testInfo.title_en}`,
     html: getEmailTemplate('تقييم جديد متاح', content),
     text: `مرحباً ${name}،\n\nتم تعيين تقييم جديد لك: ${testInfo.title_ar || testInfo.title_en}\nتاريخ الاستحقاق: ${dueDate}\n\nيرجى زيارة النظام لإكمال التقييم: ${assessmentLink}\n\n---\nنظام تقييم الاحتياجات التدريبية`,
   };
 
   try {
+    console.log('📧 Sending test assigned email to:', normalizedTo);
     const result = await transporter.sendMail(mailOptions);
-    console.log('Test assigned email sent to:', email);
+    console.log('✅ Test assigned email sent to:', normalizedTo);
     return { success: true, messageId: result.messageId };
   } catch (error) {
-    console.error('Failed to send test assigned email:', error);
+    console.error('❌ Failed to send test assigned email:', error.message);
     return { success: false, error: error.message };
   }
 }
@@ -436,7 +559,16 @@ async function sendTestAssignedEmail(email, name, testInfo) {
  * @returns {Promise<object>}
  */
 async function sendCourseCompletedEmail(email, name, courseInfo) {
+  if (!transporter) {
+    console.warn('⚠️  Email service not configured. Skipping course completed email.');
+    return { success: false, error: 'Email service not configured' };
+  }
+
   const dashboardLink = `${frontendUrl}/dashboard`;
+  
+  // Normalize email addresses
+  const normalizedTo = normalizeEmailAddress(email, false);
+  const normalizedFrom = normalizeEmailAddress(process.env.GMAIL_USER || '', false);
   
   const content = `
     <div class="content">
@@ -469,20 +601,21 @@ async function sendCourseCompletedEmail(email, name, courseInfo) {
   const mailOptions = {
     from: {
       name: 'نظام تقييم الاحتياجات التدريبية',
-      address: process.env.GMAIL_USER,
+      address: normalizedFrom,
     },
-    to: email,
+    to: normalizedTo,
     subject: `🎉 تهانينا! أكملت دورة: ${courseInfo.name_ar || courseInfo.name_en}`,
     html: getEmailTemplate('تهانينا على إكمال الدورة!', content),
     text: `مرحباً ${name}،\n\nتهانينا! 🎉 لقد أكملت دورة "${courseInfo.name_ar || courseInfo.name_en}" بنجاح.\n\nاستمر في تطوير مهاراتك!\n\n---\nنظام تقييم الاحتياجات التدريبية`,
   };
 
   try {
+    console.log('📧 Sending course completed email to:', normalizedTo);
     const result = await transporter.sendMail(mailOptions);
-    console.log('Course completed email sent to:', email);
+    console.log('✅ Course completed email sent to:', normalizedTo);
     return { success: true, messageId: result.messageId };
   } catch (error) {
-    console.error('Failed to send course completed email:', error);
+    console.error('❌ Failed to send course completed email:', error.message);
     return { success: false, error: error.message };
   }
 }
@@ -495,8 +628,17 @@ async function sendCourseCompletedEmail(email, name, courseInfo) {
  * @returns {Promise<object>}
  */
 async function sendTestResultsEmail(email, name, resultInfo) {
+  if (!transporter) {
+    console.warn('⚠️  Email service not configured. Skipping test results email.');
+    return { success: false, error: 'Email service not configured' };
+  }
+
   const resultsLink = `${frontendUrl}/my-results`;
   const percentage = Math.round(resultInfo.percentage || 0);
+  
+  // Normalize email addresses
+  const normalizedTo = normalizeEmailAddress(email, false);
+  const normalizedFrom = normalizeEmailAddress(process.env.GMAIL_USER || '', false);
   
   let scoreClass = 'score-low';
   let feedbackMessage = 'يمكنك تحسين أدائك من خلال الدورات التدريبية الموصى بها.';
@@ -519,16 +661,20 @@ async function sendTestResultsEmail(email, name, resultInfo) {
       
       <div class="highlight-box" style="text-align: center;">
         <h3 style="margin: 0 0 20px 0; color: #0284c7;">${resultInfo.test_title_ar || resultInfo.test_title_en}</h3>
-        <div class="score-circle ${scoreClass}">
-          ${percentage}%
-        </div>
+        <table cellpadding="0" cellspacing="0" border="0" style="margin: 0 auto 16px auto;">
+          <tr>
+            <td class="score-circle ${scoreClass}" style="width: 80px; height: 80px; border-radius: 50%; text-align: center; vertical-align: middle; font-size: 24px; font-weight: bold;">
+              ${percentage}%
+            </td>
+          </tr>
+        </table>
         <p style="margin: 16px 0 0 0; color: #475569; font-size: 16px;">
           ${feedbackMessage}
         </p>
       </div>
       
       <div class="button-container">
-        <a href="${resultsLink}" class="button primary">عرض التفاصيل</a>
+        <a href="${resultsLink}" class="button" style="background: linear-gradient(135deg, #543192 0%, #442574 100%); box-shadow: 0 4px 14px rgba(84, 49, 146, 0.4);">عرض التفاصيل</a>
       </div>
       
       <div class="note">
@@ -541,20 +687,21 @@ async function sendTestResultsEmail(email, name, resultInfo) {
   const mailOptions = {
     from: {
       name: 'نظام تقييم الاحتياجات التدريبية',
-      address: process.env.GMAIL_USER,
+      address: normalizedFrom,
     },
-    to: email,
+    to: normalizedTo,
     subject: `📊 نتائج التقييم: ${resultInfo.test_title_ar || resultInfo.test_title_en} - ${percentage}%`,
     html: getEmailTemplate('نتائج التقييم', content),
     text: `مرحباً ${name}،\n\nتم تقييم نتائج اختبارك "${resultInfo.test_title_ar || resultInfo.test_title_en}".\n\nالنتيجة: ${percentage}%\n\nلمشاهدة التفاصيل: ${resultsLink}\n\n---\nنظام تقييم الاحتياجات التدريبية`,
   };
 
   try {
+    console.log('📧 Sending test results email to:', normalizedTo);
     const result = await transporter.sendMail(mailOptions);
-    console.log('Test results email sent to:', email);
+    console.log('✅ Test results email sent to:', normalizedTo);
     return { success: true, messageId: result.messageId };
   } catch (error) {
-    console.error('Failed to send test results email:', error);
+    console.error('❌ Failed to send test results email:', error.message);
     return { success: false, error: error.message };
   }
 }
@@ -567,7 +714,16 @@ async function sendTestResultsEmail(email, name, resultInfo) {
  * @returns {Promise<object>}
  */
 async function sendBadgeAwardedEmail(email, name, badgeInfo) {
+  if (!transporter) {
+    console.warn('⚠️  Email service not configured. Skipping badge awarded email.');
+    return { success: false, error: 'Email service not configured' };
+  }
+
   const dashboardLink = `${frontendUrl}/dashboard`;
+  
+  // Normalize email addresses
+  const normalizedTo = normalizeEmailAddress(email, false);
+  const normalizedFrom = normalizeEmailAddress(process.env.GMAIL_USER || '', false);
   
   const badgeEmojis = {
     trophy: '🏆',
@@ -613,20 +769,21 @@ async function sendBadgeAwardedEmail(email, name, badgeInfo) {
   const mailOptions = {
     from: {
       name: 'نظام تقييم الاحتياجات التدريبية',
-      address: process.env.GMAIL_USER,
+      address: normalizedFrom,
     },
-    to: email,
+    to: normalizedTo,
     subject: `${badgeEmoji} وسام جديد: ${badgeInfo.title_ar || badgeInfo.title_en}`,
     html: getEmailTemplate('تهانينا! وسام جديد', content),
     text: `مرحباً ${name}،\n\nتهانينا! 🎊 لقد حصلت على وسام جديد: ${badgeInfo.title_ar || badgeInfo.title_en}\n\n${badgeInfo.description_ar || ''}\n\n---\nنظام تقييم الاحتياجات التدريبية`,
   };
 
   try {
+    console.log('📧 Sending badge awarded email to:', normalizedTo);
     const result = await transporter.sendMail(mailOptions);
-    console.log('Badge awarded email sent to:', email);
+    console.log('✅ Badge awarded email sent to:', normalizedTo);
     return { success: true, messageId: result.messageId };
   } catch (error) {
-    console.error('Failed to send badge awarded email:', error);
+    console.error('❌ Failed to send badge awarded email:', error.message);
     return { success: false, error: error.message };
   }
 }
@@ -639,7 +796,16 @@ async function sendBadgeAwardedEmail(email, name, badgeInfo) {
  * @returns {Promise<object>}
  */
 async function sendBadgeRevokedEmail(email, name, badgeInfo) {
+  if (!transporter) {
+    console.warn('⚠️  Email service not configured. Skipping badge revoked email.');
+    return { success: false, error: 'Email service not configured' };
+  }
+
   const dashboardLink = `${frontendUrl}/dashboard`;
+  
+  // Normalize email addresses
+  const normalizedTo = normalizeEmailAddress(email, false);
+  const normalizedFrom = normalizeEmailAddress(process.env.GMAIL_USER || '', false);
   
   const content = `
     <div class="content">
@@ -672,20 +838,21 @@ async function sendBadgeRevokedEmail(email, name, badgeInfo) {
   const mailOptions = {
     from: {
       name: 'نظام تقييم الاحتياجات التدريبية',
-      address: process.env.GMAIL_USER,
+      address: normalizedFrom,
     },
-    to: email,
+    to: normalizedTo,
     subject: `إشعار: تم سحب وسام ${badgeInfo.title_ar || badgeInfo.title_en}`,
     html: getEmailTemplate('تحديث على الأوسمة', content),
     text: `مرحباً ${name}،\n\nنود إعلامك بأنه تم سحب وسام "${badgeInfo.title_ar || badgeInfo.title_en}" من حسابك.\n\n${badgeInfo.reason_ar ? `السبب: ${badgeInfo.reason_ar}` : ''}\n\nيمكنك استعادة هذا الوسام من خلال تحسين أدائك.\n\n---\nنظام تقييم الاحتياجات التدريبية`,
   };
 
   try {
+    console.log('📧 Sending badge revoked email to:', normalizedTo);
     const result = await transporter.sendMail(mailOptions);
-    console.log('Badge revoked email sent to:', email);
+    console.log('✅ Badge revoked email sent to:', normalizedTo);
     return { success: true, messageId: result.messageId };
   } catch (error) {
-    console.error('Failed to send badge revoked email:', error);
+    console.error('❌ Failed to send badge revoked email:', error.message);
     return { success: false, error: error.message };
   }
 }
@@ -698,8 +865,17 @@ async function sendBadgeRevokedEmail(email, name, badgeInfo) {
  * @returns {Promise<object>}
  */
 async function sendTestReminderEmail(email, name, testInfo) {
+  if (!transporter) {
+    console.warn('⚠️  Email service not configured. Skipping test reminder email.');
+    return { success: false, error: 'Email service not configured' };
+  }
+
   const assessmentLink = `${frontendUrl}/assessments`;
   const dueDate = testInfo.due_date ? new Date(testInfo.due_date).toLocaleDateString('ar-SA') : 'غير محدد';
+  
+  // Normalize email addresses
+  const normalizedTo = normalizeEmailAddress(email, false);
+  const normalizedFrom = normalizeEmailAddress(process.env.GMAIL_USER || '', false);
   
   const content = `
     <div class="content">
@@ -732,31 +908,124 @@ async function sendTestReminderEmail(email, name, testInfo) {
   const mailOptions = {
     from: {
       name: 'نظام تقييم الاحتياجات التدريبية',
-      address: process.env.GMAIL_USER,
+      address: normalizedFrom,
     },
-    to: email,
+    to: normalizedTo,
     subject: `⏰ تذكير: لديك تقييم معلق - ${testInfo.title_ar || testInfo.title_en}`,
     html: getEmailTemplate('تذكير بتقييم معلق', content),
     text: `مرحباً ${name}،\n\nتذكير: لديك تقييم معلق منذ ${testInfo.days_pending} يوم.\n\nالتقييم: ${testInfo.title_ar || testInfo.title_en}\nتاريخ الاستحقاق: ${dueDate}\n\nيرجى إكماله من خلال: ${assessmentLink}\n\n---\nنظام تقييم الاحتياجات التدريبية`,
   };
 
   try {
+    console.log('📧 Sending test reminder email to:', normalizedTo);
     const result = await transporter.sendMail(mailOptions);
-    console.log('Test reminder email sent to:', email);
+    console.log('✅ Test reminder email sent to:', normalizedTo);
     return { success: true, messageId: result.messageId };
   } catch (error) {
-    console.error('Failed to send test reminder email:', error);
+    console.error('❌ Failed to send test reminder email:', error.message);
     return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Send password reset email
+ * @param {string} email - Recipient email
+ * @param {string} name - User's name
+ * @param {string} token - Password reset token
+ * @returns {Promise<object>}
+ */
+async function sendPasswordResetEmail(email, name, token) {
+  const resetLink = `${frontendUrl}/reset-password/${token}`;
+  
+  // Normalize email addresses
+  const normalizedTo = normalizeEmailAddress(email, true);
+  const normalizedFrom = normalizeEmailAddress(
+    process.env.GMAIL_FROM_EMAIL || process.env.GMAIL_USER || '',
+    false
+  );
+  
+  const content = `
+    <div class="content">
+      <p class="greeting">مرحباً ${name}،</p>
+      
+      <p class="message">
+        لقد تلقينا طلباً لإعادة تعيين كلمة المرور الخاصة بحسابك.
+        <br><br>
+        إذا لم تطلب ذلك، يمكنك تجاهل هذه الرسالة.
+      </p>
+      
+      <div class="highlight-box warning" style="text-align: center;">
+        <div style="font-size: 48px; margin-bottom: 16px;">🔐</div>
+        <p style="margin: 0; color: #475569;">
+          لإعادة تعيين كلمة المرور، اضغط على الزر أدناه
+        </p>
+      </div>
+      
+      <div class="button-container">
+        <a href="${resetLink}" class="button" style="display: inline-block; background-color: #543192; background: linear-gradient(135deg, #543192 0%, #442574 100%); color: #ffffff !important; text-decoration: none; padding: 16px 40px; border-radius: 12px; font-size: 16px; font-weight: 600;">إعادة تعيين كلمة المرور</a>
+      </div>
+      
+      <div class="note">
+        <p class="note-title">ملاحظة:</p>
+        <p>هذا الرابط صالح لمدة ساعة واحدة فقط. إذا لم تتمكن من النقر على الزر، يمكنك نسخ الرابط التالي ولصقه في متصفحك:</p>
+        <p class="link-text" style="word-break: break-all; color: #0ea5e9; font-size: 12px;">${resetLink}</p>
+      </div>
+    </div>
+  `;
+
+  const mailOptions = {
+    from: {
+      name: 'نظام تقييم الاحتياجات التدريبية',
+      address: normalizedFrom,
+    },
+    to: normalizedTo,
+    subject: '🔐 إعادة تعيين كلمة المرور',
+    html: getEmailTemplate('إعادة تعيين كلمة المرور', content),
+    text: `
+مرحباً ${name}،
+
+لقد تلقينا طلباً لإعادة تعيين كلمة المرور الخاصة بحسابك.
+
+لإعادة تعيين كلمة المرور، يرجى زيارة الرابط التالي:
+${resetLink}
+
+ملاحظة: هذا الرابط صالح لمدة ساعة واحدة فقط.
+
+إذا لم تطلب ذلك، يمكنك تجاهل هذه الرسالة.
+
+---
+نظام تقييم الاحتياجات التدريبية
+    `.trim(),
+  };
+
+  // Check if transporter is available
+  if (!transporter) {
+    console.warn('⚠️  No email service configured. Email sending is disabled.');
+    console.log('📧 Would send password reset email to:', normalizedTo);
+    console.log('🔗 Reset link:', resetLink);
+    throw new Error('Email service not configured. Please set GMAIL_USER and GMAIL_APP_PASSWORD environment variables.');
+  }
+
+  try {
+    console.log('📧 Sending password reset email to:', normalizedTo);
+    const result = await transporter.sendMail(mailOptions);
+    console.log('✅ Password reset email sent to:', normalizedTo);
+    return { success: true, messageId: result.messageId };
+  } catch (error) {
+    console.error('❌ Failed to send password reset email:', error.message);
+    throw new Error(`Failed to send password reset email: ${error.message}`);
   }
 }
 
 module.exports = {
   sendInvitationEmail,
   verifyEmailConfig,
+  isEmailServiceReady,
   sendTestAssignedEmail,
   sendCourseCompletedEmail,
   sendTestResultsEmail,
   sendBadgeAwardedEmail,
   sendBadgeRevokedEmail,
   sendTestReminderEmail,
+  sendPasswordResetEmail,
 };

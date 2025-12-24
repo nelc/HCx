@@ -63,7 +63,8 @@ router.post('/', authenticate, isTrainingOfficer, [
     
     const { 
       test_id, skill_id, question_type, question_ar, question_en,
-      options, likert_labels, self_rating_config, required, weight, order_index
+      options, likert_labels, self_rating_config, required, weight, order_index,
+      assessment_metadata
     } = req.body;
     
     // Get next order index if not provided
@@ -105,16 +106,18 @@ router.post('/', authenticate, isTrainingOfficer, [
     const result = await db.query(`
       INSERT INTO questions (
         test_id, skill_id, question_type, question_ar, question_en,
-        options, likert_labels, self_rating_config, required, weight, order_index
+        options, likert_labels, self_rating_config, required, weight, order_index,
+        assessment_metadata
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING *
     `, [
       test_id, skill_id, question_type, question_ar, question_en,
       options ? JSON.stringify(options) : null,
       finalLikertLabels ? JSON.stringify(finalLikertLabels) : null,
       finalSelfRatingConfig ? JSON.stringify(finalSelfRatingConfig) : null,
-      required !== false, weight || 1.0, finalOrderIndex
+      required !== false, weight || 1.0, finalOrderIndex,
+      assessment_metadata ? JSON.stringify(assessment_metadata) : null
     ]);
     
     res.status(201).json(result.rows[0]);
@@ -174,16 +177,18 @@ router.post('/bulk', authenticate, isTrainingOfficer, [
       const result = await db.query(`
         INSERT INTO questions (
           test_id, skill_id, question_type, question_ar, question_en,
-          options, likert_labels, self_rating_config, required, weight, order_index
+          options, likert_labels, self_rating_config, required, weight, order_index,
+          assessment_metadata
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING *
       `, [
         test_id, q.skill_id, q.question_type, q.question_ar, q.question_en,
         q.options ? JSON.stringify(q.options) : null,
         likertLabels ? JSON.stringify(likertLabels) : null,
         selfRatingConfig ? JSON.stringify(selfRatingConfig) : null,
-        q.required !== false, q.weight || 1.0, orderIndex
+        q.required !== false, q.weight || 1.0, orderIndex,
+        q.assessment_metadata ? JSON.stringify(q.assessment_metadata) : null
       ]);
       
       createdQuestions.push(result.rows[0]);
@@ -201,7 +206,8 @@ router.put('/:id', authenticate, isTrainingOfficer, async (req, res) => {
   try {
     const { 
       skill_id, question_type, question_ar, question_en,
-      options, likert_labels, self_rating_config, required, weight, order_index
+      options, likert_labels, self_rating_config, required, weight, order_index,
+      assessment_metadata
     } = req.body;
     
     const result = await db.query(`
@@ -215,15 +221,18 @@ router.put('/:id', authenticate, isTrainingOfficer, async (req, res) => {
           self_rating_config = COALESCE($7, self_rating_config),
           required = COALESCE($8, required),
           weight = COALESCE($9, weight),
-          order_index = COALESCE($10, order_index)
-      WHERE id = $11
+          order_index = COALESCE($10, order_index),
+          assessment_metadata = COALESCE($11, assessment_metadata)
+      WHERE id = $12
       RETURNING *
     `, [
       skill_id, question_type, question_ar, question_en,
       options ? JSON.stringify(options) : null,
       likert_labels ? JSON.stringify(likert_labels) : null,
       self_rating_config ? JSON.stringify(self_rating_config) : null,
-      required, weight, order_index, req.params.id
+      required, weight, order_index,
+      assessment_metadata ? JSON.stringify(assessment_metadata) : null,
+      req.params.id
     ]);
     
     if (result.rows.length === 0) {
