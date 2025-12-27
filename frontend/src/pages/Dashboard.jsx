@@ -42,6 +42,65 @@ import PeerRankings from '../components/PeerRankings';
 
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, LineElement, PointElement, Filler, RadialLinearScale);
 
+// Collapsible Section Component
+function CollapsibleSection({ title, icon: Icon, children, defaultOpen = true, headerColor = 'primary', badge = null }) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  const colorClasses = {
+    primary: 'from-primary-600 to-primary-700',
+    emerald: 'from-emerald-600 to-teal-700',
+    amber: 'from-amber-500 to-orange-600',
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="card overflow-hidden"
+    >
+      {/* Collapsible Header */}
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className={`w-full bg-gradient-to-l ${colorClasses[headerColor] || colorClasses.primary} p-4 text-white flex items-center justify-between hover:brightness-110 transition-all`}
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+            <Icon className="w-6 h-6" />
+          </div>
+          <div className="text-right">
+            <h2 className="text-lg font-bold">{title}</h2>
+            {badge && (
+              <span className="text-white/80 text-sm">{badge}</span>
+            )}
+          </div>
+        </div>
+        <motion.div
+          animate={{ rotate: isOpen ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+          className="w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center"
+        >
+          <ChevronDownIcon className="w-5 h-5" />
+        </motion.div>
+      </button>
+
+      {/* Collapsible Content */}
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.3, ease: 'easeInOut' }}
+            className="overflow-hidden"
+          >
+            {children}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
 // Stat Card Component
 function StatCard({ title, value, icon: Icon, color, trend, delay = 0 }) {
   return (
@@ -71,9 +130,10 @@ function StatCard({ title, value, icon: Icon, color, trend, delay = 0 }) {
 }
 
 // My Department Info Component for Employees
-function MyDepartmentInfo() {
+function MyDepartmentInfo({ defaultOpen = false }) {
   const [departmentInfo, setDepartmentInfo] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isOpen, setIsOpen] = useState(defaultOpen);
 
   useEffect(() => {
     const fetchDepartmentInfo = async () => {
@@ -104,129 +164,150 @@ function MyDepartmentInfo() {
     return null; // Don't show if user has no department
   }
 
+  // Build subtitle from parent hierarchy
+  const subtitleParts = [];
+  if (departmentInfo.parent_name_ar) subtitleParts.push(departmentInfo.parent_name_ar);
+  if (departmentInfo.grandparent_name_ar) subtitleParts.push(departmentInfo.grandparent_name_ar);
+  const subtitle = subtitleParts.join(' • ');
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       className="card overflow-hidden"
     >
-      {/* Header */}
-      <div className="bg-gradient-to-l from-primary-600 to-primary-700 p-6 text-white">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 bg-white/20 rounded-xl flex items-center justify-center">
-            <BuildingOffice2Icon className="w-8 h-8" />
+      {/* Collapsible Header */}
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full bg-gradient-to-l from-primary-600 to-primary-700 p-4 text-white flex items-center justify-between hover:brightness-110 transition-all"
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+            <BuildingOffice2Icon className="w-6 h-6" />
           </div>
-          <div>
-            <h2 className="text-xl font-bold">{departmentInfo.name_ar}</h2>
-            <div className="flex items-center gap-3 text-white/80 text-sm mt-1">
-              {departmentInfo.parent_name_ar && (
-                <span>{departmentInfo.parent_name_ar}</span>
-              )}
-              {departmentInfo.grandparent_name_ar && (
-                <>
-                  <span>•</span>
-                  <span>{departmentInfo.grandparent_name_ar}</span>
-                </>
-              )}
-            </div>
+          <div className="text-right">
+            <h2 className="text-lg font-bold">{departmentInfo.name_ar}</h2>
+            {subtitle && (
+              <span className="text-white/80 text-sm">{subtitle}</span>
+            )}
           </div>
         </div>
-      </div>
+        <motion.div
+          animate={{ rotate: isOpen ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+          className="w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center"
+        >
+          <ChevronDownIcon className="w-5 h-5" />
+        </motion.div>
+      </button>
 
-      {/* Content */}
-      <div className="p-6 space-y-6">
-        {/* Objective */}
-        {departmentInfo.objective_ar && (
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-600 mb-2">
-              <DocumentTextIcon className="w-5 h-5 text-primary-600" />
-              الهدف الرئيسي
-            </div>
-            <p className="text-slate-700 bg-slate-50 rounded-lg p-4">
-              {departmentInfo.objective_ar}
-            </p>
-          </div>
-        )}
-
-        {/* Responsibilities */}
-        {departmentInfo.responsibilities && departmentInfo.responsibilities.length > 0 && (
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-600 mb-2">
-              <DocumentTextIcon className="w-5 h-5 text-accent-600" />
-              المسؤوليات ({departmentInfo.responsibilities.length})
-            </div>
-            <ul className="bg-slate-50 rounded-lg p-4 space-y-2">
-              {departmentInfo.responsibilities.map((resp, index) => (
-                <li key={index} className="flex items-start gap-2 text-slate-700">
-                  <span className="w-5 h-5 bg-accent-100 text-accent-700 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
-                    {index + 1}
-                  </span>
-                  <span>{resp.text_ar || resp.text_en}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {/* Related Domains */}
-        {departmentInfo.domains && departmentInfo.domains.length > 0 && (
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-600 mb-3">
-              <FolderIcon className="w-5 h-5 text-primary-600" />
-              مجالات التدريب المرتبطة ({departmentInfo.domains.length})
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {departmentInfo.domains.map((domain) => (
-                <div
-                  key={domain.id}
-                  className="border border-slate-200 rounded-lg p-4 hover:border-primary-300 transition-colors"
-                >
-                  <div className="flex items-center gap-3 mb-3">
-                    <div
-                      className="w-10 h-10 rounded-lg flex items-center justify-center"
-                      style={{ backgroundColor: (domain.color || '#502390') + '20' }}
-                    >
-                      <FolderIcon className="w-5 h-5" style={{ color: domain.color || '#502390' }} />
-                    </div>
-                    <div>
-                      <h4 className="font-semibold text-slate-800">{domain.name_ar}</h4>
-                      <p className="text-xs text-slate-500">{domain.name_en}</p>
-                    </div>
+      {/* Collapsible Content */}
+      <AnimatePresence initial={false}>
+        {isOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.3, ease: 'easeInOut' }}
+            className="overflow-hidden"
+          >
+            {/* Content */}
+            <div className="p-6 space-y-6">
+              {/* Objective */}
+              {departmentInfo.objective_ar && (
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-600 mb-2">
+                    <DocumentTextIcon className="w-5 h-5 text-primary-600" />
+                    الهدف الرئيسي
                   </div>
-                  
-                  {domain.skills && domain.skills.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {domain.skills.map((skill) => (
-                        <span
-                          key={skill.id}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-full"
-                          style={{ 
-                            backgroundColor: (domain.color || '#502390') + '15',
-                            color: domain.color || '#502390'
-                          }}
-                        >
-                          <TagIcon className="w-3 h-3" />
-                          {skill.name_ar}
-                        </span>
-                      ))}
-                    </div>
-                  )}
+                  <p className="text-slate-700 bg-slate-50 rounded-lg p-4">
+                    {departmentInfo.objective_ar}
+                  </p>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
+              )}
 
-        {/* Empty state */}
-        {!departmentInfo.objective_ar && 
-         (!departmentInfo.responsibilities || departmentInfo.responsibilities.length === 0) && 
-         (!departmentInfo.domains || departmentInfo.domains.length === 0) && (
-          <div className="text-center py-8 text-slate-400">
-            <DocumentTextIcon className="w-12 h-12 mx-auto mb-3" />
-            <p>لم يتم تحديد معلومات إضافية لهذه الإدارة بعد</p>
-          </div>
+              {/* Responsibilities */}
+              {departmentInfo.responsibilities && departmentInfo.responsibilities.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-600 mb-2">
+                    <DocumentTextIcon className="w-5 h-5 text-accent-600" />
+                    المسؤوليات ({departmentInfo.responsibilities.length})
+                  </div>
+                  <ul className="bg-slate-50 rounded-lg p-4 space-y-2">
+                    {departmentInfo.responsibilities.map((resp, index) => (
+                      <li key={index} className="flex items-start gap-2 text-slate-700">
+                        <span className="w-5 h-5 bg-accent-100 text-accent-700 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">
+                          {index + 1}
+                        </span>
+                        <span>{resp.text_ar || resp.text_en}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Related Domains */}
+              {departmentInfo.domains && departmentInfo.domains.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-600 mb-3">
+                    <FolderIcon className="w-5 h-5 text-primary-600" />
+                    مجالات التدريب المرتبطة ({departmentInfo.domains.length})
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {departmentInfo.domains.map((domain) => (
+                      <div
+                        key={domain.id}
+                        className="border border-slate-200 rounded-lg p-4 hover:border-primary-300 transition-colors"
+                      >
+                        <div className="flex items-center gap-3 mb-3">
+                          <div
+                            className="w-10 h-10 rounded-lg flex items-center justify-center"
+                            style={{ backgroundColor: (domain.color || '#502390') + '20' }}
+                          >
+                            <FolderIcon className="w-5 h-5" style={{ color: domain.color || '#502390' }} />
+                          </div>
+                          <div>
+                            <h4 className="font-semibold text-slate-800">{domain.name_ar}</h4>
+                            <p className="text-xs text-slate-500">{domain.name_en}</p>
+                          </div>
+                        </div>
+                        
+                        {domain.skills && domain.skills.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {domain.skills.map((skill) => (
+                              <span
+                                key={skill.id}
+                                className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-full"
+                                style={{ 
+                                  backgroundColor: (domain.color || '#502390') + '15',
+                                  color: domain.color || '#502390'
+                                }}
+                              >
+                                <TagIcon className="w-3 h-3" />
+                                {skill.name_ar}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Empty state */}
+              {!departmentInfo.objective_ar && 
+               (!departmentInfo.responsibilities || departmentInfo.responsibilities.length === 0) && 
+               (!departmentInfo.domains || departmentInfo.domains.length === 0) && (
+                <div className="text-center py-8 text-slate-400">
+                  <DocumentTextIcon className="w-12 h-12 mx-auto mb-3" />
+                  <p>لم يتم تحديد معلومات إضافية لهذه الإدارة بعد</p>
+                </div>
+              )}
+            </div>
+          </motion.div>
         )}
-      </div>
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -470,7 +551,7 @@ const getArabicFirstName = (fullName) => {
 };
 
 // CV Skills Section Component
-function CVSkillsSection({ cvSkills = [] }) {
+function CVSkillsSection({ cvSkills = [], defaultOpen = false }) {
   if (!cvSkills || cvSkills.length === 0) {
     return null;
   }
@@ -494,26 +575,13 @@ function CVSkillsSection({ cvSkills = [] }) {
   const domains = Object.values(skillsByDomain);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="card overflow-hidden"
+    <CollapsibleSection
+      title="مهاراتك من السيرة الذاتية"
+      icon={DocumentArrowUpIcon}
+      headerColor="emerald"
+      badge={`${cvSkills.length} مهارة مستخرجة من سيرتك الذاتية`}
+      defaultOpen={defaultOpen}
     >
-      {/* Header */}
-      <div className="bg-gradient-to-l from-emerald-600 to-teal-700 p-6 text-white">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 bg-white/20 rounded-xl flex items-center justify-center">
-            <DocumentArrowUpIcon className="w-8 h-8" />
-          </div>
-          <div>
-            <h2 className="text-xl font-bold">مهاراتك من السيرة الذاتية</h2>
-            <p className="text-white/80 text-sm mt-1">
-              {cvSkills.length} مهارة مستخرجة من سيرتك الذاتية
-            </p>
-          </div>
-        </div>
-      </div>
-
       {/* Skills by Domain */}
       <div className="p-6 space-y-6">
         {domains.map((domain) => (
@@ -574,7 +642,110 @@ function CVSkillsSection({ cvSkills = [] }) {
           </div>
         </div>
       </div>
-    </motion.div>
+    </CollapsibleSection>
+  );
+}
+
+// Collapsible Leaderboard Wrapper Component
+function CollapsibleLeaderboard({ defaultOpen = false }) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  return (
+    <div className="relative">
+      {/* Collapse Toggle Button - Overlays on top of Leaderboard header */}
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="absolute top-4 left-4 z-10 w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center hover:bg-white/30 transition-colors"
+        title={isOpen ? 'طي القسم' : 'توسيع القسم'}
+      >
+        <motion.div
+          animate={{ rotate: isOpen ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+        >
+          <ChevronDownIcon className="w-5 h-5 text-white" />
+        </motion.div>
+      </button>
+
+      {/* Collapsed State - Just show header */}
+      {!isOpen ? (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="card overflow-hidden cursor-pointer"
+          onClick={() => setIsOpen(true)}
+        >
+          <div className="bg-gradient-to-l from-primary-600 to-primary-700 p-4 text-white">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+                <TrophyIcon className="w-6 h-6" />
+              </div>
+              <div className="text-right">
+                <h2 className="text-lg font-bold">لوحة المتصدرين</h2>
+                <span className="text-white/80 text-sm">قارن أداءك مع زملائك</span>
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      ) : (
+        <Leaderboard />
+      )}
+    </div>
+  );
+}
+
+// Collapsible Achievements Wrapper Component
+function CollapsibleAchievements({ achievements, stats, defaultOpen = false }) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  if (!achievements || achievements.length === 0) {
+    return null;
+  }
+
+  const badgeText = `${achievements.length} وسام وإنجاز`;
+
+  return (
+    <div className="relative">
+      {/* Collapse Toggle Button - Overlays on top of Achievements header */}
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="absolute top-4 left-4 z-10 w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center hover:bg-white/30 transition-colors"
+        title={isOpen ? 'طي القسم' : 'توسيع القسم'}
+      >
+        <motion.div
+          animate={{ rotate: isOpen ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+        >
+          <ChevronDownIcon className="w-5 h-5 text-white" />
+        </motion.div>
+      </button>
+
+      {/* Collapsed State - Just show header */}
+      {!isOpen ? (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="card overflow-hidden cursor-pointer"
+          onClick={() => setIsOpen(true)}
+        >
+          <div className="bg-gradient-to-l from-amber-500 to-orange-600 p-4 text-white">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+                <SparklesIcon className="w-6 h-6" />
+              </div>
+              <div className="text-right">
+                <h2 className="text-lg font-bold">الإنجازات والأوسمة</h2>
+                <span className="text-white/80 text-sm">{badgeText}</span>
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      ) : (
+        <AchievementBadges 
+          achievements={achievements} 
+          stats={stats}
+        />
+      )}
+    </div>
   );
 }
 
@@ -1078,22 +1249,22 @@ function EmployeeDashboard() {
         </div>
       </div>
 
-      {/* Leaderboard Section */}
-      <Leaderboard />
+      {/* Leaderboard Section - Collapsible */}
+      <CollapsibleLeaderboard />
 
-      {/* Achievements Section */}
+      {/* Achievements Section - Collapsible */}
       {leaderboardData?.achievements && leaderboardData.achievements.length > 0 && (
-        <AchievementBadges 
+        <CollapsibleAchievements 
           achievements={leaderboardData.achievements} 
           stats={leaderboardData.user_stats}
         />
       )}
 
-      {/* CV Skills Section */}
-      <CVSkillsSection cvSkills={cvSkills} />
+      {/* CV Skills Section - Collapsible */}
+      <CVSkillsSection cvSkills={cvSkills} defaultOpen={false} />
 
-      {/* My Department Section */}
-      <MyDepartmentInfo />
+      {/* My Department Section - Collapsible */}
+      <MyDepartmentInfo defaultOpen={false} />
 
     </div>
   );

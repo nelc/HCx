@@ -14,11 +14,13 @@ import {
   TrashIcon,
   EyeIcon,
   EyeSlashIcon,
+  PlusCircleIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import api from '../utils/api';
 import useAuthStore from '../store/authStore';
 import EditCourseModal from '../components/EditCourseModal';
+import AddCourseModal from '../components/AddCourseModal';
 import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
 
 export default function Courses() {
@@ -42,9 +44,10 @@ export default function Courses() {
     subject: '',
   });
   
-  // Admin edit/delete modal states
+  // Admin edit/delete/add modal states
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [addModalOpen, setAddModalOpen] = useState(false);
   const [selectedCourse, setSelectedCourse] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [expandedDescriptions, setExpandedDescriptions] = useState({}); // Track expanded descriptions
@@ -75,18 +78,73 @@ export default function Courses() {
       params.append('page', pagination.page);
       params.append('limit', pagination.limit);
 
-      const response = await api.get(`/courses/neo4j?${params.toString()}`);
-      setCourses(response.data.courses || []);
+      // Fetch both Neo4j courses and locally added courses in parallel
+      const [neo4jResponse, localResponse] = await Promise.allSettled([
+        api.get(`/courses/neo4j?${params.toString()}`),
+        api.get(`/courses?${params.toString()}`) // Fetch locally added courses from PostgreSQL
+      ]);
+
+      let allCourses = [];
+      let totalCount = 0;
+
+      // Add locally added courses first (on top)
+      // Only include courses that are NOT synced to Neo4j (truly local/manual courses)
+      // Courses synced to Neo4j will come from the /neo4j endpoint
+      if (localResponse.status === 'fulfilled' && localResponse.value?.data?.courses) {
+        const localCourses = localResponse.value.data.courses
+          .filter(c => !c.synced_to_neo4j) // Only include truly local courses
+          .map(c => ({
+            ...c,
+            source: 'local',
+            is_local: true
+          }));
+        allCourses = [...localCourses];
+        totalCount += localCourses.length;
+      }
+
+      // Add Neo4j courses after local ones
+      if (neo4jResponse.status === 'fulfilled' && neo4jResponse.value?.data?.courses) {
+        const neo4jCourses = neo4jResponse.value.data.courses;
+        // Filter out any duplicates (in case a course exists in both)
+        const localIds = new Set(allCourses.map(c => c.id));
+        const uniqueNeo4jCourses = neo4jCourses.filter(c => !localIds.has(c.id));
+        allCourses = [...allCourses, ...uniqueNeo4jCourses];
+        totalCount += neo4jResponse.value.data.pagination?.total || 0;
+      }
+
+      // Sort to ensure local courses are always on top
+      allCourses.sort((a, b) => {
+        if ((a.source === 'local' || a.is_local) && !(b.source === 'local' || b.is_local)) return -1;
+        if (!(a.source === 'local' || a.is_local) && (b.source === 'local' || b.is_local)) return 1;
+        return 0;
+      });
+
+      setCourses(allCourses);
       setPagination(prev => ({
         ...prev,
-        total: response.data.pagination?.total || 0,
-        totalPages: response.data.pagination?.totalPages || 1
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / pagination.limit)
       }));
+
+      // Check if Neo4j failed
+      if (neo4jResponse.status === 'rejected') {
+        const error = neo4jResponse.reason;
+        const errorData = error.response?.data;
+        const errorCode = errorData?.code;
+        if (errorCode === 'CONFIG_ERROR' && allCourses.length === 0) {
+          setSourceError({
+            message: errorData?.error || 'خدمة Neo4j غير مُعدّة',
+            code: errorCode,
+            hint: errorData?.hint,
+            source: 'neo4j'
+          });
+        }
+      }
     } catch (error) {
-      console.error('Fetch Neo4j courses error:', error);
+      console.error('Fetch courses error:', error);
       const errorData = error.response?.data;
       const errorCode = errorData?.code;
-      const errorMsg = errorData?.error || errorData?.message || 'فشل في تحميل دورات Neo4j';
+      const errorMsg = errorData?.error || errorData?.message || 'فشل في تحميل الدورات';
 
       setSourceError({
         message: errorMsg,
@@ -325,6 +383,14 @@ export default function Courses() {
     setSelectedCourse(null);
   };
 
+  // Admin: Handle new course added
+  const handleCourseAdded = (newCourse) => {
+    // Add the new course to the beginning of the list
+    setCourses(prev => [newCourse, ...prev]);
+    setPagination(prev => ({ ...prev, total: prev.total + 1 }));
+    toast.success('تم إضافة الدورة إلى القائمة');
+  };
+
   // Admin: Toggle course visibility for employees (whitelist approach)
   // Courses are hidden by default - toggle adds/removes from visible_courses whitelist
   const handleToggleVisibility = async (course) => {
@@ -366,14 +432,26 @@ export default function Courses() {
           <h1 className="text-2xl font-bold text-primary-700">الدورات التدريبية</h1>
           <p className="text-slate-500">استعرض الدورات المتاحة في نظام التوصيات الذكي</p>
         </div>
-        <button
-          onClick={fetchNeo4jCourses}
-          className="btn btn-secondary"
-          title="تحديث الدورات"
-        >
-          <ArrowPathIcon className="w-5 h-5" />
-          تحديث
-        </button>
+        <div className="flex items-center gap-3">
+          {isAdmin && (
+            <button
+              onClick={() => setAddModalOpen(true)}
+              className="btn btn-primary"
+              title="إضافة دورة جديدة"
+            >
+              <PlusCircleIcon className="w-5 h-5" />
+              إضافة دورة
+            </button>
+          )}
+          <button
+            onClick={fetchNeo4jCourses}
+            className="btn btn-secondary"
+            title="تحديث الدورات"
+          >
+            <ArrowPathIcon className="w-5 h-5" />
+            تحديث
+          </button>
+        </div>
       </div>
 
       {/* Search and Filters */}
@@ -621,7 +699,7 @@ export default function Courses() {
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2 flex-wrap">
                       <h3 className={`text-lg font-semibold ${!course.is_visible ? 'text-slate-400' : 'text-slate-800'}`}>
-                        {course.name_ar}
+                        {course.name_ar || course.name_en || 'دورة بدون عنوان'}
                       </h3>
                       {/* Domain badges next to title */}
                       {(course.domains?.length > 0 || course.subject) && (
@@ -649,9 +727,36 @@ export default function Courses() {
                           مخفي عن الموظفين
                         </span>
                       )}
+                      {/* Manually added course badge */}
+                      {(course.source === 'local' || course.is_local) && (
+                        <span className="px-2 py-1 text-xs font-medium rounded bg-amber-100 text-amber-700 flex items-center gap-1">
+                          <PlusCircleIcon className="w-3 h-3" />
+                          تمت إضافته يدوياً
+                        </span>
+                      )}
                       <span className={`px-2 py-1 text-xs font-medium rounded ${getDifficultyColor(course.difficulty_level)}`}>
                         {getDifficultyLabel(course.difficulty_level)}
                       </span>
+                      {/* Language Badge */}
+                      {course.language && (
+                        <span className={`px-2 py-1 text-xs font-medium rounded ${
+                          course.language === 'ar' ? 'bg-emerald-100 text-emerald-700' : 'bg-indigo-100 text-indigo-700'
+                        }`}>
+                          {course.language === 'ar' ? 'عربي' : course.language === 'en' ? 'English' : course.language}
+                        </span>
+                      )}
+                      {/* Price Badge */}
+                      {(course.price !== undefined && course.price !== null) ? (
+                        course.price === 0 ? (
+                          <span className="px-2 py-1 text-xs font-medium bg-teal-100 text-teal-700 rounded">
+                            مجاني
+                          </span>
+                        ) : (
+                          <span className="px-2 py-1 text-xs font-medium bg-orange-100 text-orange-700 rounded">
+                            {course.price} ر.س
+                          </span>
+                        )
+                      ) : null}
                       {/* Rating */}
                       {course.rating && (
                         <span className="px-2 py-1 text-xs font-medium bg-amber-100 text-amber-700 rounded flex items-center gap-1">
@@ -661,14 +766,30 @@ export default function Courses() {
                       )}
                     </div>
                     
-                    {course.description_ar && (
+                    {/* English Name - shown as subtitle when different from Arabic */}
+                    {course.name_en && course.name_ar && course.name_en !== course.name_ar && (
+                      <p className="text-sm text-slate-500 mb-2 font-medium">
+                        {course.name_en}
+                      </p>
+                    )}
+                    
+                    {(course.description_ar || course.description_en) && (
                       <div className="mb-3">
                         <p className={`text-sm text-slate-600 ${
                           expandedDescriptions[course.id] ? '' : 'line-clamp-2'
                         }`}>
-                          {course.description_ar}
+                          {course.description_ar || course.description_en}
                         </p>
-                        {course.description_ar.length > 150 && (
+                        {/* Show English description if different and available */}
+                        {expandedDescriptions[course.id] && course.description_en && course.description_ar && course.description_en !== course.description_ar && (
+                          <div className="mt-2 p-2 bg-indigo-50 rounded border-r-2 border-indigo-300">
+                            <span className="text-xs text-indigo-600 font-medium block mb-1">English Description:</span>
+                            <p className="text-sm text-slate-600">
+                              {course.description_en}
+                            </p>
+                          </div>
+                        )}
+                        {(course.description_ar || course.description_en)?.length > 150 && (
                           <button
                             onClick={() => toggleDescription(course.id)}
                             className="text-xs text-primary-600 hover:text-primary-700 mt-1 font-medium"
@@ -777,11 +898,85 @@ export default function Courses() {
                     {/* AI-Enriched Content Section */}
                     {course.is_enriched && (
                       <div className="mt-4 pt-4 border-t border-slate-200">
-                        {/* AI Summary */}
+                        {/* AI Summary - Arabic */}
                         {course.summary_ar && (
-                          <p className="text-sm text-slate-600 mb-2 bg-slate-50 p-2 rounded">
-                            {course.summary_ar}
-                          </p>
+                          <div className="mb-3">
+                            <span className="text-xs font-medium text-slate-500 block mb-1">ملخص الدورة:</span>
+                            <p className="text-sm text-slate-600 bg-slate-50 p-2 rounded">
+                              {course.summary_ar}
+                            </p>
+                          </div>
+                        )}
+                        
+                        {/* AI Summary - English */}
+                        {course.summary_en && (
+                          <div className="mb-3">
+                            <span className="text-xs font-medium text-indigo-500 block mb-1">Course Summary:</span>
+                            <p className="text-sm text-slate-600 bg-indigo-50 p-2 rounded border-r-2 border-indigo-300">
+                              {course.summary_en}
+                            </p>
+                          </div>
+                        )}
+                        
+                        {/* Target Audience */}
+                        {course.target_audience && (
+                          <div className="mb-3">
+                            <span className="text-xs font-medium text-slate-500 block mb-1">الفئة المستهدفة:</span>
+                            <div className="flex flex-wrap gap-2">
+                              {typeof course.target_audience === 'object' ? (
+                                <>
+                                  {course.target_audience.experience_level && (
+                                    <span className="text-xs bg-violet-50 text-violet-700 px-2 py-1 rounded">
+                                      👤 {course.target_audience.experience_level}
+                                    </span>
+                                  )}
+                                  {course.target_audience.roles && Array.isArray(course.target_audience.roles) && course.target_audience.roles.slice(0, 3).map((role, idx) => (
+                                    <span key={`role-${idx}`} className="text-xs bg-violet-50 text-violet-700 px-2 py-1 rounded">
+                                      🎯 {role}
+                                    </span>
+                                  ))}
+                                  {course.target_audience.prerequisites && Array.isArray(course.target_audience.prerequisites) && course.target_audience.prerequisites.slice(0, 2).map((prereq, idx) => (
+                                    <span key={`prereq-${idx}`} className="text-xs bg-amber-50 text-amber-700 px-2 py-1 rounded">
+                                      📋 {prereq}
+                                    </span>
+                                  ))}
+                                </>
+                              ) : (
+                                <span className="text-xs bg-violet-50 text-violet-700 px-2 py-1 rounded">
+                                  👤 {String(course.target_audience)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Quality Indicators */}
+                        {course.quality_indicators && typeof course.quality_indicators === 'object' && Object.keys(course.quality_indicators).length > 0 && (
+                          <div className="mb-3">
+                            <span className="text-xs font-medium text-slate-500 block mb-1">مؤشرات الجودة:</span>
+                            <div className="flex flex-wrap gap-2">
+                              {course.quality_indicators.content_depth && (
+                                <span className="text-xs bg-cyan-50 text-cyan-700 px-2 py-1 rounded flex items-center gap-1">
+                                  📊 عمق المحتوى: {course.quality_indicators.content_depth}
+                                </span>
+                              )}
+                              {course.quality_indicators.practical_focus && (
+                                <span className="text-xs bg-cyan-50 text-cyan-700 px-2 py-1 rounded flex items-center gap-1">
+                                  🔧 التركيز العملي: {course.quality_indicators.practical_focus}
+                                </span>
+                              )}
+                              {course.quality_indicators.up_to_date && (
+                                <span className="text-xs bg-cyan-50 text-cyan-700 px-2 py-1 rounded flex items-center gap-1">
+                                  🆕 محدث: {course.quality_indicators.up_to_date ? 'نعم' : 'لا'}
+                                </span>
+                              )}
+                              {course.quality_indicators.certification_value && (
+                                <span className="text-xs bg-cyan-50 text-cyan-700 px-2 py-1 rounded flex items-center gap-1">
+                                  🏅 قيمة الشهادة: {course.quality_indicators.certification_value}
+                                </span>
+                              )}
+                            </div>
+                          </div>
                         )}
                         
                         {/* Learning Outcomes */}
@@ -811,6 +1006,13 @@ export default function Courses() {
                             </span>
                           ))}
                         </div>
+                        
+                        {/* Enriched At (Admin only) */}
+                        {isAdmin && course.enriched_at && (
+                          <div className="mt-2 text-xs text-slate-400">
+                            تم التحليل: {new Date(course.enriched_at).toLocaleDateString('ar-SA')}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -899,24 +1101,62 @@ export default function Courses() {
 
           {/* Pagination */}
           {pagination.total > pagination.limit && (
-            <div className="flex justify-center gap-2">
-              <button
-                onClick={() => setPagination({ ...pagination, page: Math.max(1, pagination.page - 1) })}
-                disabled={pagination.page === 1}
-                className="btn btn-secondary disabled:opacity-50"
-              >
-                السابق
-              </button>
-              <span className="px-4 py-2 text-slate-600">
-                صفحة {pagination.page} من {Math.ceil(pagination.total / pagination.limit)}
-              </span>
-              <button
-                onClick={() => setPagination({ ...pagination, page: Math.min(Math.ceil(pagination.total / pagination.limit), pagination.page + 1) })}
-                disabled={pagination.page >= Math.ceil(pagination.total / pagination.limit)}
-                className="btn btn-secondary disabled:opacity-50"
-              >
-                التالي
-              </button>
+            <div className="flex flex-col items-center gap-3">
+              <div className="flex justify-center gap-2">
+                <button
+                  onClick={() => setPagination({ ...pagination, page: Math.max(1, pagination.page - 1) })}
+                  disabled={pagination.page === 1}
+                  className="btn btn-secondary disabled:opacity-50"
+                >
+                  السابق
+                </button>
+                <span className="px-4 py-2 text-slate-600">
+                  صفحة {pagination.page} من {Math.ceil(pagination.total / pagination.limit)}
+                </span>
+                <button
+                  onClick={() => setPagination({ ...pagination, page: Math.min(Math.ceil(pagination.total / pagination.limit), pagination.page + 1) })}
+                  disabled={pagination.page >= Math.ceil(pagination.total / pagination.limit)}
+                  className="btn btn-secondary disabled:opacity-50"
+                >
+                  التالي
+                </button>
+              </div>
+              {/* Jump to page */}
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-500">انتقل إلى صفحة:</span>
+                <input
+                  type="number"
+                  min="1"
+                  max={Math.ceil(pagination.total / pagination.limit)}
+                  placeholder={pagination.page}
+                  className="input w-20 text-center py-1 px-2"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const targetPage = parseInt(e.target.value);
+                      const maxPage = Math.ceil(pagination.total / pagination.limit);
+                      if (targetPage >= 1 && targetPage <= maxPage) {
+                        setPagination({ ...pagination, page: targetPage });
+                        e.target.value = '';
+                      }
+                    }
+                  }}
+                  id="page-jump-input"
+                />
+                <button
+                  onClick={() => {
+                    const input = document.getElementById('page-jump-input');
+                    const targetPage = parseInt(input.value);
+                    const maxPage = Math.ceil(pagination.total / pagination.limit);
+                    if (targetPage >= 1 && targetPage <= maxPage) {
+                      setPagination({ ...pagination, page: targetPage });
+                      input.value = '';
+                    }
+                  }}
+                  className="btn btn-primary py-1 px-3 text-sm"
+                >
+                  انتقال
+                </button>
+              </div>
             </div>
           )}
         </>
@@ -934,6 +1174,14 @@ export default function Courses() {
         filterOptions={neo4jFilters || {}}
       />
 
+      {/* Admin: Add Course Modal */}
+      <AddCourseModal
+        isOpen={addModalOpen}
+        onClose={() => setAddModalOpen(false)}
+        onSuccess={handleCourseAdded}
+        filterOptions={neo4jFilters || {}}
+      />
+
       {/* Admin: Delete Confirmation Modal */}
       <DeleteConfirmationModal
         isOpen={deleteModalOpen}
@@ -943,7 +1191,7 @@ export default function Courses() {
         }}
         onConfirm={handleDeleteConfirm}
         title="حذف الدورة"
-        message={`هل أنت متأكد من حذف الدورة "${selectedCourse?.name_ar}"؟\n\nسيتم حذف الدورة وجميع العلاقات المرتبطة بها من قاعدة بيانات Neo4j.\n\nلا يمكن التراجع عن هذا الإجراء.`}
+        message={`هل أنت متأكد من حذف الدورة "${selectedCourse?.name_ar || selectedCourse?.name_en || 'هذه الدورة'}"؟\n\nلا يمكن التراجع عن هذا الإجراء.`}
         confirmText={deleting ? 'جاري الحذف...' : 'حذف'}
         cancelText="إلغاء"
       />

@@ -29,6 +29,7 @@ import AcceptInvitation from './pages/AcceptInvitation';
 import Reports from './pages/Reports';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
+import TrainingPlan from './pages/TrainingPlan';
 
 // Protected Route Component
 function ProtectedRoute({ children, allowedRoles }) {
@@ -151,6 +152,11 @@ function App() {
             <Route path="recommendations" element={
               <ProtectedRoute allowedRoles={['admin', 'employee']}>
                 <PageWrapper><Recommendations /></PageWrapper>
+              </ProtectedRoute>
+            } />
+            <Route path="training-plan" element={
+              <ProtectedRoute allowedRoles={['admin', 'employee']}>
+                <PageWrapper><TrainingPlan /></PageWrapper>
               </ProtectedRoute>
             } />
             

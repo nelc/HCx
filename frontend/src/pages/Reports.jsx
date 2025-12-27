@@ -32,10 +32,13 @@ import {
   ChevronDownIcon,
   ChevronUpIcon,
   ArrowDownTrayIcon,
+  LinkIcon,
+  FolderIcon,
+  PlayIcon,
 } from '@heroicons/react/24/outline';
 import { CheckCircleIcon as CheckCircleSolidIcon } from '@heroicons/react/24/solid';
 import toast from 'react-hot-toast';
-import api from '../utils/api';
+import api, { downloadFile } from '../utils/api';
 import { getRoleLabel, getInitials, formatDate } from '../utils/helpers';
 
 export default function Reports() {
@@ -73,6 +76,20 @@ export default function Reports() {
   
   // CSV download state
   const [downloadingCSV, setDownloadingCSV] = useState(false);
+  
+  // Training plan state
+  const [trainingPlan, setTrainingPlan] = useState(null);
+  const [loadingTrainingPlan, setLoadingTrainingPlan] = useState(false);
+  const [expandedPlanDomains, setExpandedPlanDomains] = useState({});
+  
+  // Collapsible sections state (all closed by default)
+  const [expandedProfileSections, setExpandedProfileSections] = useState({
+    experience: false,
+    career: false,
+    interests: false,
+  });
+  const [expandedCompetencyDomains, setExpandedCompetencyDomains] = useState({});
+  const [expandedTestAssignments, setExpandedTestAssignments] = useState({});
 
   useEffect(() => {
     fetchUsers();
@@ -134,6 +151,23 @@ export default function Reports() {
       setFuturexCourses(null);
     } finally {
       setLoadingRecommendations(false);
+    }
+  };
+
+  const fetchTrainingPlan = async (userId) => {
+    setLoadingTrainingPlan(true);
+    try {
+      const response = await api.get(`/training-plans/user/${userId}`);
+      setTrainingPlan(response.data);
+      // Auto-expand first domain if exists
+      if (response.data.plan?.length > 0) {
+        setExpandedPlanDomains({ [response.data.plan[0].domain_id]: true });
+      }
+    } catch (error) {
+      console.error('Failed to fetch training plan:', error);
+      setTrainingPlan(null);
+    } finally {
+      setLoadingTrainingPlan(false);
     }
   };
 
@@ -240,8 +274,22 @@ export default function Reports() {
 
   const handleSelectUser = (userId) => {
     setSelectedUserId(userId);
+    setEmployeeProfile(null);      // Clear old profile immediately
     setRecommendations(null);
     setFuturexCourses(null);
+    setTrainingPlan(null);         // Clear old training plan
+    setExpandedPlanDomains({});    // Reset expansion state
+    setExpandedSections({          // Reset section toggles
+      learning_map: false,
+      learning_favorites: false,
+      future_path: false,
+      admin_added: false,
+      futurex_completed: false,
+    });
+    // Reset collapsible sections (all closed by default)
+    setExpandedProfileSections({ experience: false, career: false, interests: false });
+    setExpandedCompetencyDomains({});
+    setExpandedTestAssignments({});
     fetchEmployeeProfile(userId);
   };
 
@@ -250,6 +298,24 @@ export default function Reports() {
     setEmployeeProfile(null);
     setRecommendations(null);
     setFuturexCourses(null);
+    setTrainingPlan(null);
+    setExpandedPlanDomains({});
+    setExpandedProfileSections({ experience: false, career: false, interests: false });
+    setExpandedCompetencyDomains({});
+    setExpandedTestAssignments({});
+  };
+  
+  // Toggle functions for collapsible sections
+  const toggleProfileSection = (section) => {
+    setExpandedProfileSections(prev => ({ ...prev, [section]: !prev[section] }));
+  };
+  
+  const toggleCompetencyDomain = (domainId) => {
+    setExpandedCompetencyDomains(prev => ({ ...prev, [domainId]: !prev[domainId] }));
+  };
+  
+  const toggleTestAssignment = (assignmentId) => {
+    setExpandedTestAssignments(prev => ({ ...prev, [assignmentId]: !prev[assignmentId] }));
   };
 
   // Fetch recommendations when switching to recommendations tab
@@ -258,6 +324,46 @@ export default function Reports() {
       fetchRecommendations(selectedUserId);
     }
   }, [activeTab, selectedUserId]);
+
+  // Fetch training plan when switching to training_plan tab
+  useEffect(() => {
+    if (activeTab === 'training_plan' && selectedUserId && !trainingPlan && !loadingTrainingPlan) {
+      fetchTrainingPlan(selectedUserId);
+    }
+  }, [activeTab, selectedUserId]);
+
+  const togglePlanDomain = (domainId) => {
+    setExpandedPlanDomains(prev => ({
+      ...prev,
+      [domainId]: !prev[domainId]
+    }));
+  };
+
+  const getPlanStatusBadge = (status) => {
+    switch (status) {
+      case 'completed':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-1 bg-success-100 text-success-700 rounded-full text-xs font-medium">
+            <CheckCircleSolidIcon className="w-3 h-3" />
+            مكتمل
+          </span>
+        );
+      case 'in_progress':
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">
+            <ClockIcon className="w-3 h-3" />
+            قيد التنفيذ
+          </span>
+        );
+      default:
+        return (
+          <span className="inline-flex items-center gap-1 px-2 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium">
+            <ClockIcon className="w-3 h-3" />
+            معلق
+          </span>
+        );
+    }
+  };
 
   const filteredUsers = users.filter(user =>
     user.name_ar?.toLowerCase().includes(search.toLowerCase()) ||
@@ -324,6 +430,7 @@ export default function Reports() {
     { id: 'competency', label: 'مصفوفة الكفاءات', icon: ChartBarIcon },
     { id: 'tests', label: 'الاختبارات والنتائج', icon: ClipboardDocumentListIcon },
     { id: 'recommendations', label: 'التوصيات التدريبية', icon: AcademicCapIcon },
+    { id: 'training_plan', label: 'خطة التدريب', icon: BookOpenIcon },
   ];
 
   const getSectionIcon = (sectionKey) => {
@@ -584,93 +691,221 @@ export default function Reports() {
                       exit={{ opacity: 0, y: -10 }}
                       className="space-y-4"
                     >
-                      {/* Experience & Qualifications */}
-                      <div className="card p-6">
-                        <h3 className="text-lg font-semibold text-primary-700 mb-4 flex items-center gap-2">
-                          <BriefcaseIcon className="w-5 h-5" />
-                          الخبرة والمؤهلات
-                        </h3>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div className="p-4 bg-slate-50 rounded-xl">
-                            <p className="text-sm text-slate-500 mb-1">سنوات الخبرة</p>
-                            <p className="font-medium text-slate-800">
-                              {employeeProfile.profile.years_of_experience !== null 
-                                ? `${employeeProfile.profile.years_of_experience} سنة` 
-                                : 'غير محدد'}
-                            </p>
-                          </div>
-                          <div className="p-4 bg-slate-50 rounded-xl">
-                            <p className="text-sm text-slate-500 mb-1">التخصص</p>
-                            <p className="font-medium text-slate-800">{employeeProfile.profile.specialization_ar || 'غير محدد'}</p>
-                          </div>
-                          <div className="p-4 bg-slate-50 rounded-xl col-span-full">
-                            <p className="text-sm text-slate-500 mb-1">آخر مؤهل علمي</p>
-                            <p className="font-medium text-slate-800">{employeeProfile.profile.last_qualification_ar || 'غير محدد'}</p>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Career Change */}
-                      <div className="card p-6">
-                        <h3 className="text-lg font-semibold text-primary-700 mb-4 flex items-center gap-2">
-                          <RocketLaunchIcon className="w-5 h-5" />
-                          التطلعات المهنية
-                        </h3>
-                        <div className="p-4 bg-slate-50 rounded-xl mb-4">
-                          <p className="text-sm text-slate-500 mb-1">هل ينوي تغيير مساره الوظيفي؟</p>
-                          <p className="font-medium text-slate-800">
-                            {employeeProfile.profile.willing_to_change_career === true 
-                              ? 'نعم' 
-                              : employeeProfile.profile.willing_to_change_career === false 
-                                ? 'لا' 
-                                : 'غير محدد'}
-                          </p>
-                        </div>
-                        
-                        {employeeProfile.profile.desired_domains && employeeProfile.profile.desired_domains.length > 0 && (
-                          <div>
-                            <p className="text-sm text-slate-600 mb-3">المجالات الوظيفية المستقبلية:</p>
-                            <div className="flex flex-wrap gap-2">
-                              {employeeProfile.profile.desired_domains.map((domain) => (
-                                <span
-                                  key={domain.id}
-                                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium"
-                                  style={{
-                                    backgroundColor: (domain.color || '#502390') + '20',
-                                    color: domain.color || '#502390'
-                                  }}
-                                >
-                                  <span
-                                    className="w-2 h-2 rounded-full"
-                                    style={{ backgroundColor: domain.color || '#502390' }}
-                                  />
-                                  {domain.name_ar}
-                                </span>
-                              ))}
+                      {/* Experience & Qualifications - Collapsible */}
+                      <div className="card overflow-hidden">
+                        <button
+                          onClick={() => toggleProfileSection('experience')}
+                          className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-primary-50 flex items-center justify-center">
+                              <BriefcaseIcon className="w-5 h-5 text-primary-600" />
                             </div>
+                            <h3 className="text-lg font-semibold text-primary-700">الخبرة والمؤهلات</h3>
+                          </div>
+                          {expandedProfileSections.experience ? (
+                            <ChevronUpIcon className="w-5 h-5 text-slate-400" />
+                          ) : (
+                            <ChevronDownIcon className="w-5 h-5 text-slate-400" />
+                          )}
+                        </button>
+                        {expandedProfileSections.experience && (
+                          <div className="border-t border-slate-100 p-4 space-y-4">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div className="p-4 bg-slate-50 rounded-xl">
+                                <p className="text-sm text-slate-500 mb-1">سنوات الخبرة</p>
+                                <p className="font-medium text-slate-800">
+                                  {employeeProfile.profile.years_of_experience !== null 
+                                    ? `${employeeProfile.profile.years_of_experience} سنة` 
+                                    : 'غير محدد'}
+                                </p>
+                              </div>
+                              <div className="p-4 bg-slate-50 rounded-xl">
+                                <p className="text-sm text-slate-500 mb-1">التخصص</p>
+                                <p className="font-medium text-slate-800">{employeeProfile.profile.specialization_ar || 'غير محدد'}</p>
+                              </div>
+                              <div className="p-4 bg-slate-50 rounded-xl col-span-full">
+                                <p className="text-sm text-slate-500 mb-1">آخر مؤهل علمي</p>
+                                <p className="font-medium text-slate-800">{employeeProfile.profile.last_qualification_ar || 'غير محدد'}</p>
+                              </div>
+                            </div>
+                            
+                            {/* CV Extracted Skills Section */}
+                            {employeeProfile.cv_skills?.has_cv_import && (
+                              <div className="border-t border-slate-100 pt-4">
+                                <div className="flex items-center justify-between mb-3">
+                                  <div className="flex items-center gap-2">
+                                    <DocumentChartBarIcon className="w-5 h-5 text-accent-600" />
+                                    <h4 className="font-semibold text-slate-800">المهارات المستخرجة من السيرة الذاتية</h4>
+                                    <span className="px-2 py-0.5 bg-accent-100 text-accent-700 rounded-full text-xs font-medium">
+                                      {employeeProfile.cv_skills.total_skills} مهارة
+                                    </span>
+                                  </div>
+                                  {employeeProfile.cv_skills.last_import && (
+                                    <span className="text-xs text-slate-500">
+                                      آخر استيراد: {formatDate(employeeProfile.cv_skills.last_import.imported_at)}
+                                    </span>
+                                  )}
+                                </div>
+                                
+                                {employeeProfile.cv_skills.skills_by_domain?.length > 0 ? (
+                                  <div className="space-y-3">
+                                    {employeeProfile.cv_skills.skills_by_domain.map((domain) => (
+                                      <div 
+                                        key={domain.domain_id} 
+                                        className="p-3 rounded-xl border border-slate-200"
+                                        style={{ backgroundColor: (domain.domain_color || '#502390') + '08' }}
+                                      >
+                                        <div className="flex items-center gap-2 mb-2">
+                                          <span
+                                            className="w-2 h-2 rounded-full"
+                                            style={{ backgroundColor: domain.domain_color || '#502390' }}
+                                          />
+                                          <span 
+                                            className="text-sm font-medium"
+                                            style={{ color: domain.domain_color || '#502390' }}
+                                          >
+                                            {domain.domain_name_ar}
+                                          </span>
+                                          <span className="text-xs text-slate-500">
+                                            ({domain.skills.length} مهارة)
+                                          </span>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                          {domain.skills.map((skill) => (
+                                            <span
+                                              key={skill.skill_id}
+                                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-white border border-slate-200 text-slate-700"
+                                            >
+                                              <CheckCircleSolidIcon className="w-3.5 h-3.5 text-success-500" />
+                                              {skill.name_ar}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="text-slate-500 text-sm text-center py-3">
+                                    لم يتم استخراج مهارات من السيرة الذاتية
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                            
+                            {/* No CV Import Message */}
+                            {!employeeProfile.cv_skills?.has_cv_import && (
+                              <div className="border-t border-slate-100 pt-4">
+                                <div className="p-4 bg-slate-50 rounded-xl text-center">
+                                  <DocumentChartBarIcon className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                                  <p className="text-sm text-slate-500">لم يتم استيراد السيرة الذاتية بعد</p>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
 
-                      {/* Interests */}
-                      <div className="card p-6">
-                        <h3 className="text-lg font-semibold text-primary-700 mb-4 flex items-center gap-2">
-                          <HeartIcon className="w-5 h-5" />
-                          الاهتمامات
-                        </h3>
-                        {employeeProfile.profile.interests && employeeProfile.profile.interests.length > 0 ? (
-                          <div className="flex flex-wrap gap-2">
-                            {employeeProfile.profile.interests.map((interest, index) => (
-                              <span
-                                key={index}
-                                className="px-3 py-1.5 bg-pink-50 text-pink-700 rounded-full text-sm"
-                              >
-                                {parseInterest(interest)}
-                              </span>
-                            ))}
+                      {/* Career Change - Collapsible */}
+                      <div className="card overflow-hidden">
+                        <button
+                          onClick={() => toggleProfileSection('career')}
+                          className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-secondary-50 flex items-center justify-center">
+                              <RocketLaunchIcon className="w-5 h-5 text-secondary-600" />
+                            </div>
+                            <h3 className="text-lg font-semibold text-primary-700">التطلعات المهنية</h3>
                           </div>
-                        ) : (
-                          <p className="text-slate-500 text-center py-4">لم يتم تحديد اهتمامات</p>
+                          {expandedProfileSections.career ? (
+                            <ChevronUpIcon className="w-5 h-5 text-slate-400" />
+                          ) : (
+                            <ChevronDownIcon className="w-5 h-5 text-slate-400" />
+                          )}
+                        </button>
+                        {expandedProfileSections.career && (
+                          <div className="border-t border-slate-100 p-4">
+                            <div className="p-4 bg-slate-50 rounded-xl mb-4">
+                              <p className="text-sm text-slate-500 mb-1">هل ينوي تغيير مساره الوظيفي؟</p>
+                              <p className="font-medium text-slate-800">
+                                {employeeProfile.profile.willing_to_change_career === true 
+                                  ? 'نعم' 
+                                  : employeeProfile.profile.willing_to_change_career === false 
+                                    ? 'لا' 
+                                    : 'غير محدد'}
+                              </p>
+                            </div>
+                            
+                            {employeeProfile.profile.desired_domains && employeeProfile.profile.desired_domains.length > 0 && (
+                              <div>
+                                <p className="text-sm text-slate-600 mb-3">المجالات الوظيفية المستقبلية:</p>
+                                <div className="flex flex-wrap gap-2">
+                                  {employeeProfile.profile.desired_domains.map((domain) => (
+                                    <span
+                                      key={domain.id}
+                                      className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium"
+                                      style={{
+                                        backgroundColor: (domain.color || '#502390') + '20',
+                                        color: domain.color || '#502390'
+                                      }}
+                                    >
+                                      <span
+                                        className="w-2 h-2 rounded-full"
+                                        style={{ backgroundColor: domain.color || '#502390' }}
+                                      />
+                                      {domain.name_ar}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Interests - Collapsible */}
+                      <div className="card overflow-hidden">
+                        <button
+                          onClick={() => toggleProfileSection('interests')}
+                          className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-pink-50 flex items-center justify-center">
+                              <HeartIcon className="w-5 h-5 text-pink-600" />
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-lg font-semibold text-primary-700">الاهتمامات</h3>
+                              {employeeProfile.profile.interests?.length > 0 && (
+                                <span className="px-2 py-0.5 bg-pink-100 text-pink-700 rounded-full text-xs font-medium">
+                                  {employeeProfile.profile.interests.length}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {expandedProfileSections.interests ? (
+                            <ChevronUpIcon className="w-5 h-5 text-slate-400" />
+                          ) : (
+                            <ChevronDownIcon className="w-5 h-5 text-slate-400" />
+                          )}
+                        </button>
+                        {expandedProfileSections.interests && (
+                          <div className="border-t border-slate-100 p-4">
+                            {employeeProfile.profile.interests && employeeProfile.profile.interests.length > 0 ? (
+                              <div className="flex flex-wrap gap-2">
+                                {employeeProfile.profile.interests.map((interest, index) => (
+                                  <span
+                                    key={index}
+                                    className="px-3 py-1.5 bg-pink-50 text-pink-700 rounded-full text-sm"
+                                  >
+                                    {parseInterest(interest)}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-slate-500 text-center py-4">لم يتم تحديد اهتمامات</p>
+                            )}
+                          </div>
                         )}
                       </div>
                     </motion.div>
@@ -713,60 +948,80 @@ export default function Reports() {
                         </div>
                       </div>
 
-                      {/* Domains & Skills */}
+                      {/* Domains & Skills - Collapsible */}
                       {employeeProfile.competency_matrix.domains && employeeProfile.competency_matrix.domains.length > 0 ? (
                         employeeProfile.competency_matrix.domains.map((domain) => (
                           <div key={domain.domain_id} className="card overflow-hidden">
                             <div className="h-2" style={{ backgroundColor: domain.domain_color }}></div>
-                            <div className="p-6">
-                              <div className="flex items-center justify-between mb-4">
-                                <div>
-                                  <h4 className="text-lg font-semibold text-slate-800">{domain.domain_name_ar}</h4>
-                                  <p className="text-sm text-slate-500">{domain.domain_name_en}</p>
+                            <button
+                              onClick={() => toggleCompetencyDomain(domain.domain_id)}
+                              className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors"
+                            >
+                              <div className="flex items-center gap-3">
+                                <div
+                                  className="w-10 h-10 rounded-xl flex items-center justify-center"
+                                  style={{ backgroundColor: (domain.domain_color || '#502390') + '20' }}
+                                >
+                                  <ChartBarIcon className="w-5 h-5" style={{ color: domain.domain_color || '#502390' }} />
                                 </div>
+                                <div className="text-right">
+                                  <h4 className="text-lg font-semibold text-slate-800">{domain.domain_name_ar}</h4>
+                                  <p className="text-sm text-slate-500">{domain.skills?.length || 0} مهارة</p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-3">
                                 <div className="text-left">
-                                  <p className="text-3xl font-bold" style={{ color: domain.domain_color }}>
+                                  <p className="text-2xl font-bold" style={{ color: domain.domain_color }}>
                                     {domain.proficiency}%
                                   </p>
                                   <p className="text-xs text-slate-500">الإتقان</p>
                                 </div>
+                                {expandedCompetencyDomains[domain.domain_id] ? (
+                                  <ChevronUpIcon className="w-5 h-5 text-slate-400" />
+                                ) : (
+                                  <ChevronDownIcon className="w-5 h-5 text-slate-400" />
+                                )}
                               </div>
-                              
-                              {domain.skills && domain.skills.length > 0 ? (
-                                <div className="space-y-3">
-                                  {domain.skills.map((skill) => (
-                                    <div key={skill.skill_id} className="p-3 bg-slate-50 rounded-xl">
-                                      <div className="flex items-center justify-between mb-2">
-                                        <div className="flex items-center gap-2">
-                                          <span className="font-medium text-slate-800">{skill.name_ar}</span>
-                                          {skill.current_level && (
-                                            <span className={`badge text-xs ${getLevelColor(skill.current_level)}`}>
-                                              {getLevelLabel(skill.current_level)}
+                            </button>
+                            
+                            {expandedCompetencyDomains[domain.domain_id] && (
+                              <div className="border-t border-slate-100 p-4">
+                                {domain.skills && domain.skills.length > 0 ? (
+                                  <div className="space-y-3">
+                                    {domain.skills.map((skill) => (
+                                      <div key={skill.skill_id} className="p-3 bg-slate-50 rounded-xl">
+                                        <div className="flex items-center justify-between mb-2">
+                                          <div className="flex items-center gap-2">
+                                            <span className="font-medium text-slate-800">{skill.name_ar}</span>
+                                            {skill.current_level && (
+                                              <span className={`badge text-xs ${getLevelColor(skill.current_level)}`}>
+                                                {getLevelLabel(skill.current_level)}
+                                              </span>
+                                            )}
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            {getTrendIcon(skill.trend)}
+                                            <span className="text-sm font-medium text-slate-600">
+                                              {skill.score !== null ? `${skill.score}%` : '-'}
                                             </span>
+                                          </div>
+                                        </div>
+                                        <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+                                          {skill.score !== null && (
+                                            <div
+                                              className={`h-full ${getScoreColor(skill.score)}`}
+                                              style={{ width: `${skill.score}%` }}
+                                            />
                                           )}
                                         </div>
-                                        <div className="flex items-center gap-2">
-                                          {getTrendIcon(skill.trend)}
-                                          <span className="text-sm font-medium text-slate-600">
-                                            {skill.score !== null ? `${skill.score}%` : '-'}
-                                          </span>
-                                        </div>
                                       </div>
-                                      <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
-                                        {skill.score !== null && (
-                                          <div
-                                            className={`h-full ${getScoreColor(skill.score)}`}
-                                            style={{ width: `${skill.score}%` }}
-                                          />
-                                        )}
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <p className="text-slate-500 text-center py-4">لا توجد مهارات في هذا المجال</p>
-                              )}
-                            </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="text-slate-500 text-center py-4">لا توجد مهارات في هذا المجال</p>
+                                )}
+                              </div>
+                            )}
                           </div>
                         ))
                       ) : (
@@ -785,135 +1040,167 @@ export default function Reports() {
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -10 }}
-                      className="card p-6"
+                      className="space-y-4"
                     >
-                      <h3 className="text-lg font-semibold text-primary-700 mb-4 flex items-center gap-2">
+                      <h3 className="text-lg font-semibold text-primary-700 flex items-center gap-2">
                         <ClipboardDocumentListIcon className="w-5 h-5" />
                         الاختبارات والنتائج
+                        {employeeProfile.test_assignments?.length > 0 && (
+                          <span className="px-2 py-0.5 bg-primary-100 text-primary-700 rounded-full text-xs font-medium">
+                            {employeeProfile.test_assignments.length}
+                          </span>
+                        )}
                       </h3>
                       
                       {employeeProfile.test_assignments && employeeProfile.test_assignments.length > 0 ? (
-                        <div className="space-y-4">
+                        <div className="space-y-3">
                           {employeeProfile.test_assignments.map((assignment) => (
                             <div 
                               key={assignment.assignment_id} 
-                              className={`border rounded-xl overflow-hidden ${
+                              className={`card overflow-hidden ${
                                 assignment.needs_grading 
-                                  ? 'border-amber-300 bg-amber-50/30' 
-                                  : 'border-slate-200'
+                                  ? 'ring-2 ring-amber-300' 
+                                  : ''
                               }`}
                             >
                               <div 
                                 className="h-1"
                                 style={{ backgroundColor: assignment.test.domain_color || '#502390' }}
                               />
-                              <div className="p-4">
-                                <div className="flex items-start justify-between mb-3">
-                                  <div className="flex-1">
+                              {/* Collapsible Header */}
+                              <button
+                                onClick={() => toggleTestAssignment(assignment.assignment_id)}
+                                className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors"
+                              >
+                                <div className="flex items-center gap-3">
+                                  <div
+                                    className="w-10 h-10 rounded-xl flex items-center justify-center"
+                                    style={{ backgroundColor: (assignment.test.domain_color || '#502390') + '20' }}
+                                  >
+                                    <ClipboardDocumentListIcon 
+                                      className="w-5 h-5" 
+                                      style={{ color: assignment.test.domain_color || '#502390' }} 
+                                    />
+                                  </div>
+                                  <div className="text-right">
                                     <div className="flex items-center gap-2 flex-wrap">
                                       <h4 className="font-semibold text-slate-800">{assignment.test.title_ar}</h4>
-                                      {/* Needs Grading Tag */}
                                       {assignment.needs_grading && (
                                         <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-xs font-medium">
                                           <ExclamationTriangleIcon className="w-3 h-3" />
-                                          يحتاج تقييم ({assignment.ungraded_count} سؤال)
+                                          يحتاج تقييم
                                         </span>
                                       )}
                                     </div>
                                     <p className="text-sm text-slate-500">{assignment.test.domain_name_ar}</p>
                                   </div>
-                                  <div className="text-left flex items-center gap-2">
-                                    {getStatusBadge(assignment.status)}
-                                  </div>
                                 </div>
-                                
-                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                                  <div className="p-2 bg-slate-50 rounded-lg">
-                                    <p className="text-slate-500 text-xs">تاريخ التعيين</p>
-                                    <p className="font-medium text-slate-700">{formatDate(assignment.assigned_at)}</p>
-                                  </div>
-                                  {assignment.due_date && (
-                                    <div className="p-2 bg-slate-50 rounded-lg">
-                                      <p className="text-slate-500 text-xs">تاريخ الاستحقاق</p>
-                                      <p className="font-medium text-slate-700">{formatDate(assignment.due_date)}</p>
-                                    </div>
-                                  )}
-                                  {assignment.completed_at && (
-                                    <div className="p-2 bg-slate-50 rounded-lg">
-                                      <p className="text-slate-500 text-xs">تاريخ الإكمال</p>
-                                      <p className="font-medium text-slate-700">{formatDate(assignment.completed_at)}</p>
-                                    </div>
-                                  )}
+                                <div className="flex items-center gap-3">
+                                  {getStatusBadge(assignment.status)}
                                   {assignment.result && (
-                                    <div className={`p-2 rounded-lg ${assignment.needs_grading ? 'bg-amber-50' : 'bg-primary-50'}`}>
-                                      <p className={`text-xs ${assignment.needs_grading ? 'text-amber-600' : 'text-primary-600'}`}>
-                                        الدرجة {assignment.needs_grading && '(غير نهائية)'}
-                                      </p>
-                                      <p className={`font-bold text-lg ${assignment.needs_grading ? 'text-amber-700' : 'text-primary-700'}`}>
-                                        {assignment.result.overall_score}%
-                                      </p>
+                                    <span className={`text-lg font-bold ${assignment.needs_grading ? 'text-amber-700' : 'text-primary-700'}`}>
+                                      {assignment.result.overall_score}%
+                                    </span>
+                                  )}
+                                  {expandedTestAssignments[assignment.assignment_id] ? (
+                                    <ChevronUpIcon className="w-5 h-5 text-slate-400" />
+                                  ) : (
+                                    <ChevronDownIcon className="w-5 h-5 text-slate-400" />
+                                  )}
+                                </div>
+                              </button>
+                              
+                              {/* Expanded Content */}
+                              {expandedTestAssignments[assignment.assignment_id] && (
+                                <div className="border-t border-slate-100 p-4">
+                                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                                    <div className="p-2 bg-slate-50 rounded-lg">
+                                      <p className="text-slate-500 text-xs">تاريخ التعيين</p>
+                                      <p className="font-medium text-slate-700">{formatDate(assignment.assigned_at)}</p>
+                                    </div>
+                                    {assignment.due_date && (
+                                      <div className="p-2 bg-slate-50 rounded-lg">
+                                        <p className="text-slate-500 text-xs">تاريخ الاستحقاق</p>
+                                        <p className="font-medium text-slate-700">{formatDate(assignment.due_date)}</p>
+                                      </div>
+                                    )}
+                                    {assignment.completed_at && (
+                                      <div className="p-2 bg-slate-50 rounded-lg">
+                                        <p className="text-slate-500 text-xs">تاريخ الإكمال</p>
+                                        <p className="font-medium text-slate-700">{formatDate(assignment.completed_at)}</p>
+                                      </div>
+                                    )}
+                                    {assignment.result && (
+                                      <div className={`p-2 rounded-lg ${assignment.needs_grading ? 'bg-amber-50' : 'bg-primary-50'}`}>
+                                        <p className={`text-xs ${assignment.needs_grading ? 'text-amber-600' : 'text-primary-600'}`}>
+                                          الدرجة {assignment.needs_grading && '(غير نهائية)'}
+                                        </p>
+                                        <p className={`font-bold text-lg ${assignment.needs_grading ? 'text-amber-700' : 'text-primary-700'}`}>
+                                          {assignment.result.overall_score}%
+                                        </p>
+                                      </div>
+                                    )}
+                                  </div>
+                                  
+                                  {/* Strengths & Gaps */}
+                                  {assignment.result && (
+                                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                                      {assignment.result.strengths && assignment.result.strengths.length > 0 && (
+                                        <div className="p-3 bg-success-50 rounded-xl">
+                                          <p className="text-xs font-medium text-success-600 mb-2 flex items-center gap-1">
+                                            <CheckCircleIcon className="w-4 h-4" />
+                                            نقاط القوة
+                                          </p>
+                                          <div className="flex flex-wrap gap-1">
+                                            {assignment.result.strengths.slice(0, 3).map((s, i) => (
+                                              <span key={i} className="text-xs text-success-700 bg-success-100 px-2 py-1 rounded">
+                                                {s.skill_name_ar}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {assignment.result.gaps && assignment.result.gaps.length > 0 && (
+                                        <div className="p-3 bg-warning-50 rounded-xl">
+                                          <p className="text-xs font-medium text-warning-600 mb-2 flex items-center gap-1">
+                                            <ExclamationCircleIcon className="w-4 h-4" />
+                                            فجوات المهارات
+                                          </p>
+                                          <div className="flex flex-wrap gap-1">
+                                            {assignment.result.gaps.slice(0, 3).map((g, i) => (
+                                              <span key={i} className="text-xs text-warning-700 bg-warning-100 px-2 py-1 rounded">
+                                                {g.skill_name_ar}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {/* View Results Button */}
+                                  {assignment.result && (
+                                    <div className="mt-4 flex justify-end">
+                                      <Link
+                                        to={`/results/${assignment.result.analysis_id}?assignment_id=${assignment.assignment_id}`}
+                                        className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                                          assignment.needs_grading
+                                            ? 'bg-amber-100 text-amber-700 hover:bg-amber-200'
+                                            : 'bg-primary-100 text-primary-700 hover:bg-primary-200'
+                                        }`}
+                                      >
+                                        <EyeIcon className="w-4 h-4" />
+                                        {assignment.needs_grading ? 'تقييم الأسئلة المفتوحة' : 'عرض النتائج'}
+                                      </Link>
                                     </div>
                                   )}
                                 </div>
-                                
-                                {/* Strengths & Gaps */}
-                                {assignment.result && (
-                                  <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    {assignment.result.strengths && assignment.result.strengths.length > 0 && (
-                                      <div className="p-3 bg-success-50 rounded-xl">
-                                        <p className="text-xs font-medium text-success-600 mb-2 flex items-center gap-1">
-                                          <CheckCircleIcon className="w-4 h-4" />
-                                          نقاط القوة
-                                        </p>
-                                        <div className="flex flex-wrap gap-1">
-                                          {assignment.result.strengths.slice(0, 3).map((s, i) => (
-                                            <span key={i} className="text-xs text-success-700 bg-success-100 px-2 py-1 rounded">
-                                              {s.skill_name_ar}
-                                            </span>
-                                          ))}
-                                        </div>
-                                      </div>
-                                    )}
-                                    {assignment.result.gaps && assignment.result.gaps.length > 0 && (
-                                      <div className="p-3 bg-warning-50 rounded-xl">
-                                        <p className="text-xs font-medium text-warning-600 mb-2 flex items-center gap-1">
-                                          <ExclamationCircleIcon className="w-4 h-4" />
-                                          فجوات المهارات
-                                        </p>
-                                        <div className="flex flex-wrap gap-1">
-                                          {assignment.result.gaps.slice(0, 3).map((g, i) => (
-                                            <span key={i} className="text-xs text-warning-700 bg-warning-100 px-2 py-1 rounded">
-                                              {g.skill_name_ar}
-                                            </span>
-                                          ))}
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* View Results Button */}
-                                {assignment.result && (
-                                  <div className="mt-4 flex justify-end">
-                                    <Link
-                                      to={`/results/${assignment.result.analysis_id}?assignment_id=${assignment.assignment_id}`}
-                                      className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                                        assignment.needs_grading
-                                          ? 'bg-amber-100 text-amber-700 hover:bg-amber-200'
-                                          : 'bg-primary-100 text-primary-700 hover:bg-primary-200'
-                                      }`}
-                                    >
-                                      <EyeIcon className="w-4 h-4" />
-                                      {assignment.needs_grading ? 'تقييم الأسئلة المفتوحة' : 'عرض النتائج'}
-                                    </Link>
-                                  </div>
-                                )}
-                              </div>
+                              )}
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <div className="text-center py-8">
+                        <div className="card p-12 text-center">
                           <ClipboardDocumentListIcon className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                           <p className="text-slate-500">لم يتم تعيين اختبارات لهذا الموظف</p>
                         </div>
@@ -1082,16 +1369,24 @@ export default function Reports() {
                                             <div className="flex items-center gap-2 shrink-0">
                                               {/* Download Certificate button */}
                                               {rec.is_completed && rec.completion_certificate?.id && (
-                                                <a
-                                                  href={`${import.meta.env.VITE_API_URL || 'http://localhost:3001/api'}/recommendations/certificate/${rec.completion_certificate.id}/download`}
-                                                  target="_blank"
-                                                  rel="noopener noreferrer"
+                                                <button
+                                                  onClick={async () => {
+                                                    try {
+                                                      await downloadFile(
+                                                        `/recommendations/certificate/${rec.completion_certificate.id}/download`,
+                                                        rec.completion_certificate.original_filename || 'certificate'
+                                                      );
+                                                      toast.success('تم تحميل الشهادة');
+                                                    } catch (error) {
+                                                      toast.error('فشل في تحميل الشهادة');
+                                                    }
+                                                  }}
                                                   className="p-2 text-success-600 hover:text-success-700 hover:bg-success-50 rounded-lg transition-colors flex items-center gap-1"
                                                   title={`تحميل الشهادة: ${rec.completion_certificate.original_filename}`}
                                                 >
                                                   <ArrowDownTrayIcon className="w-4 h-4" />
                                                   <span className="text-xs hidden sm:inline">الشهادة</span>
-                                                </a>
+                                                </button>
                                               )}
                                               
                                               {(rec.url || rec.course_url) && (
@@ -1273,6 +1568,255 @@ export default function Reports() {
                             <PlusIcon className="w-5 h-5" />
                             إضافة دورة مخصصة
                           </button>
+                        </div>
+                      )}
+                    </motion.div>
+                  )}
+
+                  {/* Training Plan Tab */}
+                  {activeTab === 'training_plan' && (
+                    <motion.div
+                      key="training_plan"
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      className="space-y-4"
+                    >
+                      <div className="flex justify-between items-center">
+                        <h3 className="text-lg font-semibold text-primary-700 flex items-center gap-2">
+                          <BookOpenIcon className="w-5 h-5" />
+                          خطة التدريب
+                        </h3>
+                      </div>
+
+                      {loadingTrainingPlan ? (
+                        <div className="card p-12 text-center">
+                          <div className="w-12 h-12 border-4 border-primary-200 border-t-primary-600 rounded-full animate-spin mx-auto mb-4"></div>
+                          <p className="text-slate-600">جاري تحميل خطة التدريب...</p>
+                        </div>
+                      ) : trainingPlan ? (
+                        <div className="space-y-4">
+                          {/* Stats Summary */}
+                          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                            <div className="card p-3 text-center">
+                              <div className="text-2xl font-bold text-primary-700">{trainingPlan.stats.total_courses}</div>
+                              <div className="text-xs text-slate-500">إجمالي الدورات</div>
+                            </div>
+                            <div className="card p-3 text-center">
+                              <div className="text-2xl font-bold text-success-700">{trainingPlan.stats.completed}</div>
+                              <div className="text-xs text-slate-500">مكتملة</div>
+                            </div>
+                            <div className="card p-3 text-center">
+                              <div className="text-2xl font-bold text-blue-700">{trainingPlan.stats.in_progress}</div>
+                              <div className="text-xs text-slate-500">قيد التنفيذ</div>
+                            </div>
+                            <div className="card p-3 text-center">
+                              <div className="text-2xl font-bold text-slate-600">{trainingPlan.stats.pending}</div>
+                              <div className="text-xs text-slate-500">معلقة</div>
+                            </div>
+                            <div className="card p-3 text-center">
+                              <div className="text-2xl font-bold text-accent-600">{trainingPlan.stats.completion_percentage}%</div>
+                              <div className="text-xs text-slate-500">نسبة التغطية</div>
+                            </div>
+                          </div>
+
+                          {/* Domains and Skills */}
+                          {trainingPlan.plan?.length > 0 ? (
+                            trainingPlan.plan.map((domain) => {
+                              // Calculate domain statistics
+                              const totalSkills = domain.skills?.length || 0;
+                              const skillsWithCourses = domain.skills?.filter(s => s.courses?.length > 0).length || 0;
+                              const totalCourses = domain.skills?.reduce((sum, s) => sum + (s.courses?.length || 0), 0) || 0;
+                              const hasCourses = totalCourses > 0;
+                              const isFullyCovered = skillsWithCourses === totalSkills && totalSkills > 0;
+                              
+                              return (
+                              <div key={domain.domain_id} className="card overflow-hidden">
+                                <button
+                                  onClick={() => togglePlanDomain(domain.domain_id)}
+                                  className="w-full p-4 flex items-center justify-between hover:bg-slate-50 transition-colors"
+                                >
+                                  <div className="flex items-center gap-3">
+                                    <div
+                                      className={`w-10 h-10 rounded-xl flex items-center justify-center relative ${
+                                        isFullyCovered ? 'ring-2 ring-success-400 ring-offset-2' : ''
+                                      }`}
+                                      style={{ backgroundColor: (domain.domain_color || '#502390') + '20' }}
+                                    >
+                                      {isFullyCovered ? (
+                                        <CheckCircleSolidIcon className="w-5 h-5 text-success-600" />
+                                      ) : hasCourses ? (
+                                        <FolderIcon
+                                          className="w-5 h-5"
+                                          style={{ color: domain.domain_color || '#502390' }}
+                                        />
+                                      ) : (
+                                        <FolderIcon className="w-5 h-5 text-slate-400" />
+                                      )}
+                                    </div>
+                                    <div className="text-right">
+                                      <h4 className="font-bold text-slate-800">{domain.domain_name_ar}</h4>
+                                      <p className="text-sm text-slate-500">
+                                        {skillsWithCourses}/{totalSkills} مهارة مغطاة
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    {/* Course count badge */}
+                                    {hasCourses ? (
+                                      <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
+                                        isFullyCovered 
+                                          ? 'bg-success-100 text-success-700' 
+                                          : 'bg-primary-100 text-primary-700'
+                                      }`}>
+                                        {totalCourses} دورة
+                                      </span>
+                                    ) : (
+                                      <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-500">
+                                        لا توجد دورات
+                                      </span>
+                                    )}
+                                    {expandedPlanDomains[domain.domain_id] ? (
+                                      <ChevronUpIcon className="w-5 h-5 text-slate-400" />
+                                    ) : (
+                                      <ChevronDownIcon className="w-5 h-5 text-slate-400" />
+                                    )}
+                                  </div>
+                                </button>
+
+                                {expandedPlanDomains[domain.domain_id] && (
+                                  <div className="border-t border-slate-100 p-4 space-y-4">
+                                    {domain.skills?.map((skill) => (
+                                      <div key={skill.skill_id} className="border border-slate-200 rounded-xl p-4">
+                                        <h5 className="font-semibold text-slate-800 mb-3">{skill.skill_name_ar}</h5>
+                                        
+                                        {skill.courses?.length > 0 ? (
+                                          <div className="space-y-2">
+                                            {skill.courses.map((course) => (
+                                              <div
+                                                key={course.id}
+                                                className={`p-3 rounded-lg border ${
+                                                  course.status === 'completed'
+                                                    ? 'bg-success-50 border-success-200'
+                                                    : course.status === 'in_progress'
+                                                    ? 'bg-blue-50 border-blue-200'
+                                                    : 'bg-slate-50 border-slate-200'
+                                                }`}
+                                              >
+                                                <div className="flex items-start justify-between gap-3">
+                                                  <div className="flex items-start gap-3 flex-1">
+                                                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                                                      course.plan_type === 'external' 
+                                                        ? 'bg-purple-100' 
+                                                        : 'bg-primary-100'
+                                                    }`}>
+                                                      {course.plan_type === 'external' ? (
+                                                        <LinkIcon className="w-4 h-4 text-purple-600" />
+                                                      ) : (
+                                                        <AcademicCapIcon className="w-4 h-4 text-primary-600" />
+                                                      )}
+                                                    </div>
+                                                    <div className="flex-1 min-w-0">
+                                                      <div className="flex items-center gap-2 flex-wrap">
+                                                        <span className="font-medium text-slate-800">
+                                                          {course.plan_type === 'external'
+                                                            ? course.external_course_title
+                                                            : course.course_name_ar
+                                                          }
+                                                        </span>
+                                                        {getPlanStatusBadge(course.status)}
+                                                      </div>
+                                                      
+                                                      <div className="flex items-center gap-3 mt-1">
+                                                        {course.plan_type === 'external' ? (
+                                                          <span className="text-xs text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full">
+                                                            دورة خارجية
+                                                          </span>
+                                                        ) : (
+                                                          <>
+                                                            {course.course_provider && (
+                                                              <span className="text-xs text-slate-500">{course.course_provider}</span>
+                                                            )}
+                                                            {course.course_duration && (
+                                                              <span className="text-xs text-slate-500 flex items-center gap-1">
+                                                                <ClockIcon className="w-3 h-3" />
+                                                                {course.course_duration} ساعة
+                                                              </span>
+                                                            )}
+                                                          </>
+                                                        )}
+                                                        {course.completed_at && (
+                                                          <span className="text-xs text-success-600">
+                                                            أكتمل: {formatDate(course.completed_at)}
+                                                          </span>
+                                                        )}
+                                                      </div>
+                                                    </div>
+                                                  </div>
+
+                                                  <div className="flex items-center gap-1 shrink-0">
+                                                    {/* Certificate download button */}
+                                                    {course.status === 'completed' && course.certificate_id && (
+                                                      <button
+                                                        onClick={async () => {
+                                                          try {
+                                                            await downloadFile(
+                                                              `/recommendations/certificate/${course.certificate_id}/download`,
+                                                              course.certificate_original_filename || 'certificate'
+                                                            );
+                                                            toast.success('تم تحميل الشهادة');
+                                                          } catch (error) {
+                                                            toast.error('فشل في تحميل الشهادة');
+                                                          }
+                                                        }}
+                                                        className="p-2 text-success-600 hover:text-success-700 hover:bg-success-50 rounded-lg transition-colors flex items-center gap-1"
+                                                        title={`تحميل الشهادة: ${course.certificate_original_filename || 'شهادة'}`}
+                                                      >
+                                                        <ArrowDownTrayIcon className="w-4 h-4" />
+                                                        <span className="text-xs hidden sm:inline">الشهادة</span>
+                                                      </button>
+                                                    )}
+                                                    {/* Course URL link */}
+                                                    {(course.course_url || course.external_course_url) && (
+                                                      <a
+                                                        href={course.course_url || course.external_course_url}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="p-2 text-slate-500 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
+                                                        title="فتح الدورة"
+                                                      >
+                                                        <ArrowTopRightOnSquareIcon className="w-4 h-4" />
+                                                      </a>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        ) : (
+                                          <div className="p-3 bg-slate-50 rounded-lg text-center text-sm text-slate-500">
+                                            لم يتم إضافة دورات لهذه المهارة
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );})
+                          ) : (
+                            <div className="card p-12 text-center">
+                              <BookOpenIcon className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                              <h3 className="text-lg font-semibold text-slate-700 mb-2">لا توجد خطة تدريب</h3>
+                              <p className="text-slate-500">لم يقم الموظف ببناء خطة تدريب بعد</p>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="card p-12 text-center">
+                          <BookOpenIcon className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                          <h3 className="text-lg font-semibold text-slate-700 mb-2">لا توجد خطة تدريب</h3>
+                          <p className="text-slate-500">لم يتم العثور على خطة تدريب لهذا الموظف</p>
                         </div>
                       )}
                     </motion.div>

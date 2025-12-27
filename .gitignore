@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
 
 # Environment variables
 .env
@@ -22,6 +21,7 @@ yarn-error.log*
 # Editor directories
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 *~
@@ -43,4 +43,8 @@ coverage/
 
 # Cloud SQL
 cloudsql/
+
+# User uploads (sensitive data)
+backend/uploads/
+uploads/
 

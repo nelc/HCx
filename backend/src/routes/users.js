@@ -7,6 +7,7 @@ const { body, validationResult } = require('express-validator');
 const db = require('../db');
 const { authenticate, isAdmin, isTrainingOfficer } = require('../middleware/auth');
 const { sendInvitationEmail } = require('../services/emailService');
+const neo4jApi = require('../services/neo4jApi');
 
 const router = express.Router();
 
@@ -919,6 +920,60 @@ router.get('/:id/full-profile', authenticate, isTrainingOfficer, async (req, res
       };
     }
     
+    // Get CV-imported skills for this user
+    const cvSkillsResult = await db.query(`
+      SELECT 
+        esp.skill_id,
+        esp.current_level,
+        esp.confidence_score,
+        esp.source,
+        esp.created_at as imported_at,
+        s.name_ar as skill_name_ar,
+        s.name_en as skill_name_en,
+        td.id as domain_id,
+        td.name_ar as domain_name_ar,
+        td.name_en as domain_name_en,
+        td.color as domain_color
+      FROM employee_skill_profiles esp
+      JOIN skills s ON esp.skill_id = s.id
+      JOIN training_domains td ON s.domain_id = td.id
+      WHERE esp.user_id = $1 AND esp.source = 'cv_import'
+      ORDER BY td.name_ar, s.name_ar
+    `, [userId]);
+    
+    // Group CV skills by domain
+    const cvSkillsByDomain = {};
+    cvSkillsResult.rows.forEach(skill => {
+      if (!cvSkillsByDomain[skill.domain_id]) {
+        cvSkillsByDomain[skill.domain_id] = {
+          domain_id: skill.domain_id,
+          domain_name_ar: skill.domain_name_ar,
+          domain_name_en: skill.domain_name_en,
+          domain_color: skill.domain_color,
+          skills: []
+        };
+      }
+      cvSkillsByDomain[skill.domain_id].skills.push({
+        skill_id: skill.skill_id,
+        name_ar: skill.skill_name_ar,
+        name_en: skill.skill_name_en,
+        current_level: skill.current_level,
+        confidence_score: skill.confidence_score,
+        imported_at: skill.imported_at
+      });
+    });
+    
+    // Get CV import info (last import date, etc.)
+    const cvImportResult = await db.query(`
+      SELECT id, file_name, imported_skills_count, status, created_at
+      FROM cv_imports
+      WHERE user_id = $1 AND status = 'completed'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, [userId]);
+    
+    const lastCvImport = cvImportResult.rows[0] || null;
+    
     // Build response
     const response = {
       user: {
@@ -947,6 +1002,16 @@ router.get('/:id/full-profile', authenticate, isTrainingOfficer, async (req, res
         last_qualification_en: user.last_qualification_en,
         willing_to_change_career: user.willing_to_change_career,
         desired_domains: desiredDomainsDetails
+      },
+      cv_skills: {
+        has_cv_import: lastCvImport !== null,
+        last_import: lastCvImport ? {
+          file_name: lastCvImport.file_name,
+          skills_count: lastCvImport.imported_skills_count,
+          imported_at: lastCvImport.created_at
+        } : null,
+        skills_by_domain: Object.values(cvSkillsByDomain),
+        total_skills: cvSkillsResult.rows.length
       },
       competency_matrix: competencyMatrix,
       test_assignments: assignmentsWithGrades.map(row => ({
@@ -988,11 +1053,11 @@ router.get('/reports/comprehensive-csv', authenticate, isTrainingOfficer, async 
   try {
     const { department_id } = req.query;
     
-    // Build base query to get all employees
+    // Build base query to get all employees (including last_login)
     let baseQuery = `
       SELECT u.id, u.email, u.name_ar, u.name_en, u.department_id,
              u.job_title_ar, u.job_title_en, u.employee_number, u.national_id,
-             u.created_at, u.years_of_experience, u.interests,
+             u.last_login, u.created_at, u.years_of_experience, u.interests,
              u.specialization_ar, u.specialization_en,
              u.last_qualification_ar, u.last_qualification_en,
              u.willing_to_change_career, u.desired_domains,
@@ -1022,6 +1087,24 @@ router.get('/reports/comprehensive-csv', authenticate, isTrainingOfficer, async 
     const domainsMap = {};
     allDomainsResult.rows.forEach(d => { domainsMap[d.id] = d.name_ar; });
     
+    // Get all courses for recommendations (with linked skills via course_skills junction)
+    const allCoursesResult = await db.query(`
+      SELECT c.id, c.name_ar, c.subject,
+             ARRAY_AGG(DISTINCT s.id) FILTER (WHERE s.id IS NOT NULL) as skill_ids,
+             ARRAY_AGG(DISTINCT s.name_ar) FILTER (WHERE s.name_ar IS NOT NULL) as skill_names,
+             ARRAY_AGG(DISTINCT s.domain_id) FILTER (WHERE s.domain_id IS NOT NULL) as domain_ids
+      FROM courses c
+      LEFT JOIN course_skills cs ON cs.course_id = c.id
+      LEFT JOIN skills s ON s.id = cs.skill_id
+      GROUP BY c.id, c.name_ar, c.subject
+    `);
+    const allCourses = allCoursesResult.rows;
+    
+    // Get all skills for mapping
+    const allSkillsResult = await db.query('SELECT id, name_ar, domain_id FROM skills');
+    const skillsMap = {};
+    allSkillsResult.rows.forEach(s => { skillsMap[s.id] = s; });
+    
     // Build comprehensive data for each user
     const reportData = [];
     
@@ -1035,9 +1118,12 @@ router.get('/reports/comprehensive-csv', authenticate, isTrainingOfficer, async 
       // Get domains and skills linked to user's department
       let domainsNames = [];
       let skillsNames = [];
+      let assessedSkillNames = [];
       let overallReadiness = 0;
       let skillsAssessed = 0;
       let totalSkills = 0;
+      let userDomainIds = [];
+      let userSkillIds = [];
       
       if (user.department_id) {
         // Get domains and skills for user's department
@@ -1056,14 +1142,24 @@ router.get('/reports/comprehensive-csv', authenticate, isTrainingOfficer, async 
         
         const uniqueDomains = new Set();
         const uniqueSkills = new Set();
+        const uniqueDomainIds = new Set();
+        const uniqueSkillIds = new Set();
         
         skillsQuery.rows.forEach(row => {
-          if (row.domain_name_ar) uniqueDomains.add(row.domain_name_ar);
-          if (row.skill_name_ar) uniqueSkills.add(row.skill_name_ar);
+          if (row.domain_name_ar) {
+            uniqueDomains.add(row.domain_name_ar);
+            uniqueDomainIds.add(row.domain_id);
+          }
+          if (row.skill_name_ar) {
+            uniqueSkills.add(row.skill_name_ar);
+            uniqueSkillIds.add(row.skill_id);
+          }
         });
         
         domainsNames = Array.from(uniqueDomains);
         skillsNames = Array.from(uniqueSkills);
+        userDomainIds = Array.from(uniqueDomainIds);
+        userSkillIds = Array.from(uniqueSkillIds);
         totalSkills = skillsNames.length;
         
         // Get analysis results for readiness calculation
@@ -1074,7 +1170,7 @@ router.get('/reports/comprehensive-csv', authenticate, isTrainingOfficer, async 
           ORDER BY analyzed_at DESC
         `, [user.id]);
         
-        // Calculate average scores for each skill
+        // Calculate average scores for each skill and track assessed skills
         const skillScoresMap = {};
         analysesResult.rows.forEach(analysis => {
           if (analysis.skill_scores) {
@@ -1093,9 +1189,14 @@ router.get('/reports/comprehensive-csv', authenticate, isTrainingOfficer, async 
           }
         });
         
-        // Calculate overall readiness
+        // Calculate overall readiness and get assessed skill names
         const assessedSkillIds = Object.keys(skillScoresMap);
         skillsAssessed = assessedSkillIds.length;
+        
+        // Get names of assessed skills
+        assessedSkillNames = assessedSkillIds
+          .map(id => skillsMap[id]?.name_ar)
+          .filter(Boolean);
         
         if (skillsAssessed > 0) {
           let totalScore = 0;
@@ -1131,20 +1232,99 @@ router.get('/reports/comprehensive-csv', authenticate, isTrainingOfficer, async 
       
       // Parse interests
       let interestsText = '';
+      let userInterests = [];
       if (user.interests && Array.isArray(user.interests)) {
-        interestsText = user.interests.map(interest => {
+        userInterests = user.interests.map(interest => {
           const parts = interest.split(':');
           return parts.length > 1 ? parts.slice(1).join(':') : interest;
-        }).join('، ');
+        });
+        interestsText = userInterests.join('، ');
       }
       
+      // ========== RECOMMENDATIONS SECTIONS ==========
+      
+      // 1. Learning Map (خريطة التعلم) - Courses matching user's department domains/skills
+      let learningMapCourses = [];
+      if (userDomainIds.length > 0) {
+        // Get courses that match user's department domains (via course_skills -> skills -> domain)
+        learningMapCourses = allCourses
+          .filter(course => {
+            const courseDomainIds = course.domain_ids || [];
+            return courseDomainIds.some(domainId => userDomainIds.includes(domainId));
+          })
+          .slice(0, 10)
+          .map(c => c.name_ar);
+      }
+      
+      // 2. Learning Favorites (مفضلات التعلم) - Courses matching user's interests
+      let learningFavoritesCourses = [];
+      if (userInterests.length > 0) {
+        // Match courses by interest keywords in name or skills
+        learningFavoritesCourses = allCourses
+          .filter(course => {
+            const courseNameLower = (course.name_ar || '').toLowerCase();
+            const courseSubjectLower = (course.subject || '').toLowerCase();
+            const courseSkillNames = Array.isArray(course.skill_names) 
+              ? course.skill_names.join(' ').toLowerCase() 
+              : '';
+            return userInterests.some(interest => 
+              courseNameLower.includes(interest.toLowerCase()) ||
+              courseSubjectLower.includes(interest.toLowerCase()) ||
+              courseSkillNames.includes(interest.toLowerCase())
+            );
+          })
+          .slice(0, 10)
+          .map(c => c.name_ar);
+      }
+      
+      // 3. Future Path (مسار المستقبل) - Courses matching desired career domains
+      let futurePathCourses = [];
+      if (user.desired_domains && Array.isArray(user.desired_domains) && user.desired_domains.length > 0) {
+        futurePathCourses = allCourses
+          .filter(course => {
+            const courseDomainIds = course.domain_ids || [];
+            return courseDomainIds.some(domainId => user.desired_domains.includes(domainId));
+          })
+          .slice(0, 10)
+          .map(c => c.name_ar);
+      }
+      
+      // 4. Custom Recommendations (توصيات مخصصة) - Admin-added courses
+      const adminCoursesResult = await db.query(`
+        SELECT course_name_ar
+        FROM admin_course_recommendations
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+      `, [user.id]);
+      const customRecommendations = adminCoursesResult.rows.map(c => c.course_name_ar);
+      
+      // 5. FutureX Completed Courses (دورات FutureX المكتملة) - From NELC via Neo4j
+      let futurexCompletedCourses = [];
+      if (user.national_id) {
+        try {
+          const futurexCoursesResult = await neo4jApi.getNelcUserCourses(user.national_id);
+          if (futurexCoursesResult && futurexCoursesResult.length > 0) {
+            // Filter only completed courses and extract names
+            futurexCompletedCourses = futurexCoursesResult
+              .filter(course => course.status === 'Completed')
+              .map(course => course.course_name)
+              .filter(Boolean);
+          }
+        } catch (futurexError) {
+          // Silently handle FutureX fetch errors - not critical for CSV export
+          console.log(`FutureX fetch error for user ${user.id}:`, futurexError.message);
+        }
+      }
+      
+      // Build report row with all fields in the specified order
       reportData.push({
         'الاسم': user.name_ar || '',
-        'رقم الهوية الوطنية': user.national_id || '',
-        'الرقم الوظيفي': user.employee_number || '',
         'البريد الإلكتروني': user.email || '',
+        'الرقم الوظيفي': user.employee_number || '',
+        'رقم الهوية الوطنية': user.national_id || '',
         'القسم': user.department_name_ar || '',
         'المسمى الوظيفي': user.job_title_ar || '',
+        'آخر دخول': user.last_login ? new Date(user.last_login).toLocaleDateString('ar-SA') : 'لم يسجل الدخول بعد',
         'تاريخ الإنشاء': user.created_at ? new Date(user.created_at).toLocaleDateString('ar-SA') : '',
         'سنوات الخبرة': user.years_of_experience !== null ? user.years_of_experience : '',
         'التخصص': user.specialization_ar || '',
@@ -1153,11 +1333,19 @@ router.get('/reports/comprehensive-csv', authenticate, isTrainingOfficer, async 
                                          user.willing_to_change_career === false ? 'لا' : '',
         'المجالات الوظيفية المستقبلية': desiredDomainsNames.join('، '),
         'الاهتمامات': interestsText,
-        'المجالات': domainsNames.join('، '),
-        'المهارات': skillsNames.join('، '),
-        'الجاهزية (%)': overallReadiness,
-        'مهارات تم تقييمها': `${skillsAssessed} من ${totalSkills}`,
-        'الاختبارات والنتائج': testsAndResults
+        'المجالات (العدد)': domainsNames.length,
+        'المجالات (القائمة)': domainsNames.join('، '),
+        'المهارات (العدد)': totalSkills,
+        'المهارات (القائمة)': skillsNames.join('، '),
+        'تم تقييمها (العدد)': skillsAssessed,
+        'تم تقييمها (القائمة)': assessedSkillNames.join('، '),
+        'نسبة الجاهزية (%)': overallReadiness,
+        'الاختبارات والنتائج': testsAndResults,
+        'خريطة التعلم': learningMapCourses.join('، '),
+        'مفضلات التعلم': learningFavoritesCourses.join('، '),
+        'مسار المستقبل': futurePathCourses.join('، '),
+        'توصيات مخصصة': customRecommendations.join('، '),
+        'دورات FutureX المكتملة': futurexCompletedCourses.join('، ')
       });
     }
     

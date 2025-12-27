@@ -20,6 +20,7 @@ import {
   DocumentArrowUpIcon,
   CloudArrowDownIcon,
   ExclamationTriangleIcon,
+  PlusCircleIcon,
 } from '@heroicons/react/24/outline';
 import { CheckCircleIcon as CheckCircleSolidIcon } from '@heroicons/react/24/solid';
 import toast from 'react-hot-toast';
@@ -225,6 +226,13 @@ export default function Recommendations() {
                   <span className="bg-purple-50 text-purple-700 px-2 py-0.5 rounded-md text-xs font-medium flex items-center gap-1">
                     <span className="w-1.5 h-1.5 bg-purple-400 rounded-full"></span>
                     {rec.second_domain}
+                  </span>
+                )}
+                {/* Manually added course badge */}
+                {(rec.source === 'local' || rec.is_local) && (
+                  <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded-md text-xs font-medium flex items-center gap-1">
+                    <PlusCircleIcon className="w-3 h-3" />
+                    تمت إضافته يدوياً
                   </span>
                 )}
               </div>

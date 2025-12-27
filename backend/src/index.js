@@ -24,6 +24,7 @@ const cvImportRoutes = require('./routes/cvImport');
 const resultsOverviewRoutes = require('./routes/results-overview');
 const coursesRoutes = require('./routes/courses');
 const invitationsRoutes = require('./routes/invitations');
+const trainingPlansRoutes = require('./routes/trainingPlans');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -57,6 +58,7 @@ app.use('/api/cv-import', cvImportRoutes);
 app.use('/api/results-overview', resultsOverviewRoutes);
 app.use('/api/courses', coursesRoutes);
 app.use('/api/invitations', invitationsRoutes);
+app.use('/api/training-plans', trainingPlansRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -104,6 +106,7 @@ app.listen(PORT, async () => {
      - Results Overview:/api/results-overview
      - Courses:        /api/courses
      - Invitations:    /api/invitations
+     - Training Plans: /api/training-plans
      - Health:         /api/health
   `);
   

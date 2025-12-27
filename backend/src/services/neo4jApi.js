@@ -689,9 +689,15 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
     `;
   } else {
     // No skill or domain filter
+    // Add condition to only show courses with actual titles (not empty placeholders)
+    const titleCondition = `((c.name_ar IS NOT NULL AND c.name_ar <> '') OR (c.name_en IS NOT NULL AND c.name_en <> ''))`;
+    const fullWhereClause = whereClause 
+      ? `${whereClause} AND ${titleCondition}`
+      : `WHERE ${titleCondition}`;
+    
     query = `
       MATCH (c:Course)
-      ${whereClause}
+      ${fullWhereClause}
       OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
       WITH c, collect(DISTINCT {name_ar: s.name_ar, name_en: s.name_en, relevance: t.relevance_score}) as skills
       RETURN 
@@ -760,9 +766,15 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
       RETURN count(DISTINCT c) as total
     `;
   } else {
+    // Add same title filter to count query
+    const titleCondition = `((c.name_ar IS NOT NULL AND c.name_ar <> '') OR (c.name_en IS NOT NULL AND c.name_en <> ''))`;
+    const fullWhereClause = whereClause 
+      ? `${whereClause} AND ${titleCondition}`
+      : `WHERE ${titleCondition}`;
+    
     countQuery = `
       MATCH (c:Course)
-      ${whereClause}
+      ${fullWhereClause}
       RETURN count(c) as total
     `;
   }

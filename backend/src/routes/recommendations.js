@@ -569,6 +569,48 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
     careerBasedRecommendations = addCompletionInfo(careerBasedRecommendations);
     const enrichedAdminCourses = addCompletionInfo(adminAddedCourses, true);
 
+    // ============ PHASE 7.5: Mark and prioritize locally added courses ============
+    // Fetch all locally added course IDs from PostgreSQL
+    const allRecCourseIds = [
+      ...testBasedRecommendations.map(r => r.course_id),
+      ...interestBasedRecommendations.map(r => r.course_id),
+      ...careerBasedRecommendations.map(r => r.course_id)
+    ].filter(Boolean);
+
+    let localCourseIds = new Set();
+    if (allRecCourseIds.length > 0) {
+      try {
+        const localCoursesResult = await db.query(
+          'SELECT id FROM courses WHERE id = ANY($1)',
+          [allRecCourseIds]
+        );
+        localCourseIds = new Set(localCoursesResult.rows.map(c => c.id));
+      } catch (e) {
+        console.log('Error fetching local course IDs:', e.message);
+      }
+    }
+
+    // Helper to mark local courses and sort them to top
+    const markAndSortLocalCourses = (recommendations) => {
+      return recommendations
+        .map(rec => ({
+          ...rec,
+          is_local: localCourseIds.has(rec.course_id),
+          source: localCourseIds.has(rec.course_id) ? 'local' : rec.source
+        }))
+        .sort((a, b) => {
+          // Local courses first
+          if (a.is_local && !b.is_local) return -1;
+          if (!a.is_local && b.is_local) return 1;
+          // Then by recommendation score (if available)
+          return (b.recommendation_score || 0) - (a.recommendation_score || 0);
+        });
+    };
+
+    testBasedRecommendations = markAndSortLocalCourses(testBasedRecommendations);
+    interestBasedRecommendations = markAndSortLocalCourses(interestBasedRecommendations);
+    careerBasedRecommendations = markAndSortLocalCourses(careerBasedRecommendations);
+
     // ============ PHASE 8: Fetch NELC/FutureX data in parallel (for combined response) ============
     let nelcStatus = null;
     let futurexCourses = null;

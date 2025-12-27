@@ -83,5 +83,30 @@ export const syncCoursesToNeo4j = async () => {
   return await api.post('/courses/sync-all');
 };
 
+// Download file with authentication (for certificates, etc.)
+export const downloadFile = async (url, filename) => {
+  try {
+    const response = await api.get(url, {
+      responseType: 'blob',
+    });
+    
+    // Create a blob URL and trigger download
+    const blob = new Blob([response.data], { type: response.headers['content-type'] });
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = filename || 'download';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(downloadUrl);
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Download error:', error);
+    throw error;
+  }
+};
+
 export default api;
 

@@ -460,6 +460,37 @@ CREATE TABLE development_plan_items (
 );
 
 -- ============================================
+-- EMPLOYEE TRAINING PLAN ITEMS
+-- ============================================
+
+CREATE TABLE employee_training_plan_items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    
+    -- For recommended courses (from system courses)
+    course_id UUID REFERENCES courses(id) ON DELETE SET NULL,
+    
+    -- For external courses (added manually by employee)
+    external_course_title VARCHAR(500),
+    external_course_url TEXT,
+    external_course_description TEXT,
+    
+    -- Plan metadata
+    plan_type VARCHAR(20) NOT NULL CHECK (plan_type IN ('recommended', 'external')),
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed')),
+    completed_at TIMESTAMP,
+    notes TEXT,
+    
+    -- Certificate reference for completion proof
+    certificate_id UUID REFERENCES course_completion_certificates(id) ON DELETE SET NULL,
+    
+    -- Timestamps
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================
 -- NOTIFICATIONS
 -- ============================================
 
@@ -817,6 +848,13 @@ CREATE INDEX idx_admin_course_recommendations_user_id ON admin_course_recommenda
 CREATE INDEX idx_user_hidden_recommendations_user_id ON user_hidden_recommendations(user_id);
 CREATE INDEX idx_user_hidden_recommendations_course_id ON user_hidden_recommendations(course_id);
 
+CREATE INDEX idx_training_plan_items_user ON employee_training_plan_items(user_id);
+CREATE INDEX idx_training_plan_items_skill ON employee_training_plan_items(skill_id);
+CREATE INDEX idx_training_plan_items_course ON employee_training_plan_items(course_id);
+CREATE INDEX idx_training_plan_items_status ON employee_training_plan_items(status);
+CREATE INDEX idx_training_plan_items_user_skill ON employee_training_plan_items(user_id, skill_id);
+CREATE INDEX idx_training_plan_items_certificate ON employee_training_plan_items(certificate_id);
+
 -- ============================================
 -- UPDATED_AT TRIGGER FUNCTION
 -- ============================================
@@ -846,6 +884,7 @@ CREATE TRIGGER update_development_plan_items_updated_at BEFORE UPDATE ON develop
 CREATE TRIGGER update_courses_updated_at BEFORE UPDATE ON courses FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_contents_updated_at BEFORE UPDATE ON contents FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_user_badges_updated_at BEFORE UPDATE ON user_badges FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_employee_training_plan_items_updated_at BEFORE UPDATE ON employee_training_plan_items FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================
 -- TABLE COMMENTS

@@ -3,10 +3,6 @@ import { motion } from 'framer-motion';
 import {
   Square3Stack3DIcon,
   CheckCircleIcon,
-  ExclamationCircleIcon,
-  ArrowTrendingUpIcon,
-  ArrowTrendingDownIcon,
-  MinusIcon,
   ChartBarIcon,
 } from '@heroicons/react/24/outline';
 import api from '../utils/api';
@@ -114,31 +110,6 @@ export default function CompetencyMatrix() {
       default:
         return 'text-slate-500';
     }
-  };
-
-  const getTrendIcon = (trend) => {
-    if (trend === 'improving') return <ArrowTrendingUpIcon className="w-4 h-4 text-success-600" />;
-    if (trend === 'declining') return <ArrowTrendingDownIcon className="w-4 h-4 text-danger-600" />;
-    return <MinusIcon className="w-4 h-4 text-slate-400" />;
-  };
-
-  const getGapIndicator = (gap) => {
-    if (gap > 0) {
-      return (
-        <div className="flex items-center gap-1 text-warning-600">
-          <ExclamationCircleIcon className="w-4 h-4" />
-          <span className="text-xs">فجوة {gap} مستوى</span>
-        </div>
-      );
-    } else if (gap === 0) {
-      return (
-        <div className="flex items-center gap-1 text-success-600">
-          <CheckCircleIcon className="w-4 h-4" />
-          <span className="text-xs">عند الهدف</span>
-        </div>
-      );
-    }
-    return null;
   };
 
   const getScoreColor = (score) => {
@@ -309,8 +280,6 @@ export default function CompetencyMatrix() {
                     <th className="text-center py-3 px-4 text-sm font-semibold text-slate-700">المستوى الحالي</th>
                     <th className="text-center py-3 px-4 text-sm font-semibold text-slate-700">المستوى المستهدف</th>
                     <th className="text-center py-3 px-4 text-sm font-semibold text-slate-700">النتيجة</th>
-                    <th className="text-center py-3 px-4 text-sm font-semibold text-slate-700">الاتجاه</th>
-                    <th className="text-center py-3 px-4 text-sm font-semibold text-slate-700">الحالة</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -376,24 +345,6 @@ export default function CompetencyMatrix() {
                             )}
                           </div>
                         </div>
-                      </td>
-
-                      {/* Trend */}
-                      <td className="py-4 px-4 text-center">
-                        <div className="flex items-center justify-center gap-1">
-                          {getTrendIcon(skill.trend)}
-                        </div>
-                      </td>
-
-                      {/* Status/Gap - calculated from derived level and target */}
-                      <td className="py-4 px-4 text-center">
-                        {(() => {
-                          const derivedLevel = getLevelFromScore(skill.score);
-                          if (!derivedLevel || !skill.target_level) return null;
-                          const levels = ['low', 'medium', 'high'];
-                          const gap = levels.indexOf(skill.target_level) - levels.indexOf(derivedLevel);
-                          return getGapIndicator(gap);
-                        })()}
                       </td>
                     </motion.tr>
                   ))}

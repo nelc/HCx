@@ -440,13 +440,42 @@ router.get('/neo4j',
         // Build the raw URL first, then transform to FutureX format
         const rawUrl = overrides.url || course.url || '';
         
+        // Get name values with fallback chain
+        const nameAr = overrides.name_ar || course.name_ar || '';
+        const nameEn = overrides.name_en || course.name_en || '';
+        const descAr = overrides.description_ar || course.description_ar || '';
+        const descEn = overrides.description_en || course.description_en || '';
+        
+        // Generate a fallback name from course_id if no name exists
+        // This handles NELC placeholder courses that only have IDs
+        let fallbackName = '';
+        let generatedUrl = '';
+        if (!nameAr && !nameEn) {
+          const courseIdStr = String(course.course_id || '');
+          // Check if this is a numeric NELC course ID
+          if (/^\d+$/.test(courseIdStr)) {
+            fallbackName = `دورة NELC رقم ${courseIdStr}`;
+            // Generate FutureX URL if missing
+            if (!course.url) {
+              generatedUrl = `${FUTUREX_BASE_URL}/${courseIdStr}`;
+            }
+          } else {
+            // For UUID-style IDs, try to extract from URL
+            const courseIdFromUrl = course.url?.match(/\/course\/(\d+)/)?.[1];
+            fallbackName = courseIdFromUrl 
+              ? `دورة NELC رقم ${courseIdFromUrl}` 
+              : `Course ${courseIdStr.substring(0, 8) || 'Unknown'}`;
+          }
+        }
+        
         return {
           id: course.course_id,
-          name_ar: overrides.name_ar || course.name_ar || '',
-          name_en: overrides.name_en || course.name_en || '',
-          description_ar: overrides.description_ar || course.description_ar || '',
-          description_en: overrides.description_en || course.description_en || '',
-          url: toFuturexUrl({ url: rawUrl, course_id: course.course_id, nelc_course_id: nelcCourseId }),
+          // Provide fallback to English if Arabic is empty, then to generated name
+          name_ar: nameAr || nameEn || fallbackName,
+          name_en: nameEn || nameAr || fallbackName,
+          description_ar: descAr || descEn,
+          description_en: descEn || descAr,
+          url: generatedUrl || toFuturexUrl({ url: rawUrl, course_id: course.course_id, nelc_course_id: nelcCourseId }),
           provider: overrides.provider || course.provider || '',
           duration_hours: overrides.duration_hours || course.duration_hours || null,
           difficulty_level: overrides.difficulty_level || course.difficulty_level || 'beginner',
@@ -480,7 +509,7 @@ router.get('/neo4j',
       let finalTotal = result.total;
       
       if (!isAdminOrOfficer) {
-        finalCourses = mappedCourses.filter(c => c.is_visible);
+        finalCourses = validCourses.filter(c => c.is_visible);
         finalTotal = finalCourses.length;
         console.log(`👁️ Employee view: filtered to ${finalCourses.length} visible courses`);
       }
@@ -704,7 +733,8 @@ router.patch('/neo4j/:courseId',
 
 /**
  * DELETE /api/courses/neo4j/:courseId
- * Delete a course from Neo4j completely (admin only)
+ * Delete a course - handles both Neo4j courses (hide) and locally-added courses (delete from PostgreSQL)
+ * Admin only
  */
 router.delete('/neo4j/:courseId',
   isTrainingOfficer,
@@ -712,35 +742,84 @@ router.delete('/neo4j/:courseId',
     try {
       const { courseId } = req.params;
 
-      console.log(`🗑️ Admin deleting Neo4j course: ${courseId}`);
+      console.log(`🗑️ Admin deleting course: ${courseId}`);
 
-      // First check if course exists
-      const course = await neo4jApi.getCourseById(courseId);
-      if (!course) {
-        return res.status(404).json({ error: 'Course not found in Neo4j' });
+      // Check if course exists in PostgreSQL (locally added course)
+      const pgCourse = await db.query('SELECT * FROM courses WHERE id = $1', [courseId]);
+      
+      if (pgCourse.rows.length > 0) {
+        // This is a locally-added course - delete from PostgreSQL
+        console.log(`📝 Course found in PostgreSQL, deleting locally...`);
+        
+        // Delete course skills first
+        await db.query('DELETE FROM course_skills WHERE course_id = $1', [courseId]);
+        
+        // Delete the course
+        await db.query('DELETE FROM courses WHERE id = $1', [courseId]);
+        
+        // Also clean up any enrichments/overrides
+        try {
+          await db.query('DELETE FROM course_enrichments WHERE course_id = $1', [courseId]);
+          await db.query('DELETE FROM course_overrides WHERE course_id = $1', [courseId]);
+          await db.query('DELETE FROM course_skill_overrides WHERE course_id = $1', [courseId]);
+          await db.query('DELETE FROM visible_courses WHERE course_id = $1', [courseId]);
+        } catch (cleanupError) {
+          console.log('Note: Some cleanup tables may not exist:', cleanupError.message);
+        }
+
+        return res.json({
+          success: true,
+          message: 'تم حذف الدورة بنجاح',
+          course_id: courseId,
+          course_name: pgCourse.rows[0].name_ar,
+          deleted_from: 'postgresql'
+        });
       }
 
-      // Delete the course and all its relationships
-      const result = await neo4jApi.deleteCourseComplete(courseId);
+      // Check if course exists in Neo4j
+      let neo4jCourse = null;
+      try {
+        neo4jCourse = await neo4jApi.getCourseById(courseId);
+      } catch (neo4jError) {
+        console.log('Note: Could not check Neo4j:', neo4jError.message);
+      }
 
-      // Also delete enrichment from PostgreSQL if exists
+      if (!neo4jCourse) {
+        return res.status(404).json({ error: 'الدورة غير موجودة' });
+      }
+
+      // Neo4j is READ-ONLY - we cannot delete courses from it
+      // Instead, we'll hide the course by removing it from visible_courses and adding to a hidden list
+      console.log(`⚠️ Neo4j is read-only. Hiding course instead of deleting: ${courseId}`);
+      
+      // Remove from visible courses if it was visible
+      try {
+        await db.query('DELETE FROM visible_courses WHERE course_id = $1', [courseId]);
+      } catch (e) {
+        console.log('Note: visible_courses table may not exist');
+      }
+
+      // Clean up any local data associated with this course
       try {
         await db.query('DELETE FROM course_enrichments WHERE course_id = $1', [courseId]);
-      } catch (dbError) {
-        console.log('Note: Could not delete enrichment from PostgreSQL:', dbError.message);
+        await db.query('DELETE FROM course_overrides WHERE course_id = $1', [courseId]);
+        await db.query('DELETE FROM course_skill_overrides WHERE course_id = $1', [courseId]);
+      } catch (cleanupError) {
+        console.log('Note: Some cleanup failed:', cleanupError.message);
       }
 
       res.json({
         success: true,
-        message: 'Course deleted successfully from Neo4j',
+        message: 'تم إخفاء الدورة بنجاح (دورات Neo4j للقراءة فقط)',
         course_id: courseId,
-        course_name: course.name_ar,
-        result: result
+        course_name: neo4jCourse.name_ar,
+        hidden: true,
+        note: 'دورات كتالوج Neo4j لا يمكن حذفها نهائياً، تم إخفاؤها من قائمة الدورات المتاحة'
       });
     } catch (error) {
-      console.error('Delete Neo4j course error:', error);
+      console.error('Delete course error:', error);
       res.status(error.status || 500).json({
-        error: 'Failed to delete course',
+        error: 'فشل في حذف الدورة',
         message: error.message
       });
     }
@@ -1220,16 +1299,18 @@ router.post('/upload-csv',
 /**
  * POST /api/courses
  * Create a single course
+ * Supports both skill_ids (UUIDs) and skill_tags (skill names as strings)
  */
 router.post('/', 
   isTrainingOfficer,
   [
     body('name_ar').notEmpty().withMessage('Arabic name is required'),
-    body('url').optional().isURL(),
-    body('duration_hours').optional().isFloat({ min: 0 }),
-    body('price').optional().isFloat({ min: 0 }),
-    body('rating').optional().isFloat({ min: 0, max: 5 }),
-    body('skill_ids').optional().isArray()
+    body('url').optional({ nullable: true }),
+    body('duration_hours').optional({ nullable: true }).isFloat({ min: 0 }),
+    body('price').optional({ nullable: true }).isFloat({ min: 0 }),
+    body('rating').optional({ nullable: true }).isFloat({ min: 0, max: 5 }),
+    body('skill_ids').optional().isArray(),
+    body('skill_tags').optional().isArray() // Support skill names as strings
   ],
   async (req, res) => {
     try {
@@ -1255,6 +1336,8 @@ router.post('/',
         skill_tags
       } = req.body;
 
+      console.log('📝 Creating new course:', { name_ar, subject, skill_tags });
+
       // Insert into PostgreSQL
       const courseResult = await db.query(`
         INSERT INTO courses (
@@ -1265,14 +1348,15 @@ router.post('/',
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         RETURNING *
       `, [
-        name_ar, name_en, description_ar, description_en, 
-        url, provider, duration_hours, difficulty_level,
-        language, subject, subtitle, university, skill_tags || null
+        name_ar, name_en || null, description_ar || null, description_en || null, 
+        url || null, provider || null, duration_hours || null, difficulty_level || null,
+        language || 'ar', subject || null, subtitle || null, university || null, skill_tags || null
       ]);
 
       const course = courseResult.rows[0];
+      const linkedSkillIds = [];
 
-      // Link to skills
+      // Link to skills by UUID (skill_ids)
       if (skill_ids && skill_ids.length > 0) {
         for (const skill_id of skill_ids) {
           // Get skill data to calculate relevance
@@ -1284,6 +1368,38 @@ router.post('/',
               VALUES ($1, $2, $3)
               ON CONFLICT (course_id, skill_id) DO NOTHING
             `, [course.id, skill_id, relevanceScore]);
+            linkedSkillIds.push(skill_id);
+          }
+        }
+      }
+
+      // Link to skills by name (skill_tags) - lookup by name_ar or name_en
+      if (skill_tags && skill_tags.length > 0) {
+        for (const skillName of skill_tags) {
+          if (!skillName || !skillName.trim()) continue;
+          
+          // Find skill by name (try both Arabic and English)
+          const skillResult = await db.query(`
+            SELECT * FROM skills 
+            WHERE name_ar ILIKE $1 OR name_en ILIKE $1
+            LIMIT 1
+          `, [skillName.trim()]);
+          
+          if (skillResult.rows.length > 0) {
+            const skill = skillResult.rows[0];
+            // Avoid duplicate links
+            if (!linkedSkillIds.includes(skill.id)) {
+              const relevanceScore = calculateRelevanceScore(course, skill);
+              await db.query(`
+                INSERT INTO course_skills (course_id, skill_id, relevance_score)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (course_id, skill_id) DO NOTHING
+              `, [course.id, skill.id, relevanceScore]);
+              linkedSkillIds.push(skill.id);
+              console.log(`✅ Linked skill by name: ${skillName} -> ${skill.id}`);
+            }
+          } else {
+            console.log(`⚠️ Skill not found by name: ${skillName} (will be stored in skill_tags)`);
           }
         }
       }
@@ -1293,8 +1409,8 @@ router.post('/',
         await neo4jApi.createCourseNode(course);
 
         // Create skill relationships in Neo4j with calculated relevance
-        if (skill_ids && skill_ids.length > 0) {
-          for (const skill_id of skill_ids) {
+        if (linkedSkillIds.length > 0) {
+          for (const skill_id of linkedSkillIds) {
             // Ensure skill exists in Neo4j first
             const skillResult = await db.query('SELECT * FROM skills WHERE id = $1', [skill_id]);
             if (skillResult.rows.length > 0) {
@@ -1325,10 +1441,15 @@ router.post('/',
         `, [course.id, course.id]);
 
         course.synced_to_neo4j = true;
+        console.log(`✅ Course created and synced to Neo4j: ${course.id}`);
       } catch (neo4jError) {
         console.error('Neo4j sync error:', neo4jError);
         // Course is created but not synced
       }
+
+      // Mark as locally added course
+      course.source = 'local';
+      course.is_local = true;
 
       res.status(201).json(course);
     } catch (error) {

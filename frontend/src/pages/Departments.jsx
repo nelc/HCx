@@ -9,7 +9,6 @@ import {
   RectangleGroupIcon,
   UsersIcon,
   ChevronLeftIcon,
-  SparklesIcon,
   DocumentTextIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
@@ -17,7 +16,6 @@ import { Dialog } from '@headlessui/react';
 import toast from 'react-hot-toast';
 import api from '../utils/api';
 import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
-import DomainGeneratorModal from '../components/DomainGeneratorModal';
 
 // Move card components OUTSIDE of Departments to prevent re-creation on every render
 const SectorCard = memo(({ 
@@ -26,8 +24,7 @@ const SectorCard = memo(({
   hasObjective,
   onEdit, 
   onDelete, 
-  onCreateDepartment, 
-  onGenerateDomains 
+  onCreateDepartment 
 }) => {
   return (
     <motion.div
@@ -86,15 +83,6 @@ const SectorCard = memo(({
           <PlusIcon className="w-4 h-4" />
           إضافة إدارة
         </button>
-        {hasObjective && (
-          <button
-            onClick={() => onGenerateDomains(sector)}
-            className="py-2 px-3 text-sm text-accent-600 hover:text-accent-700 hover:bg-accent-50 rounded-lg transition-colors flex items-center gap-1"
-            title="توليد المجالات والمهارات"
-          >
-            <SparklesIcon className="w-4 h-4" />
-          </button>
-        )}
       </div>
     </motion.div>
   );
@@ -108,8 +96,7 @@ const DepartmentCard = memo(({
   hasObjectiveOrResponsibilities,
   onEdit, 
   onDelete, 
-  onCreateSection, 
-  onGenerateDomains 
+  onCreateSection 
 }) => {
   return (
     <motion.div
@@ -174,15 +161,6 @@ const DepartmentCard = memo(({
           <PlusIcon className="w-3.5 h-3.5" />
           إضافة قسم
         </button>
-        {hasObjectiveOrResponsibilities && (
-          <button
-            onClick={() => onGenerateDomains(department)}
-            className="py-1.5 px-2 text-xs text-accent-600 hover:text-accent-700 hover:bg-accent-50 rounded-lg transition-colors flex items-center gap-1"
-            title="توليد المجالات والمهارات"
-          >
-            <SparklesIcon className="w-3.5 h-3.5" />
-          </button>
-        )}
       </div>
     </motion.div>
   );
@@ -241,8 +219,6 @@ export default function Departments() {
   const [modalType, setModalType] = useState('sector'); // 'sector', 'department', 'section'
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [itemToDelete, setItemToDelete] = useState(null);
-  const [showDomainGenerator, setShowDomainGenerator] = useState(false);
-  const [selectedDepartmentForDomains, setSelectedDepartmentForDomains] = useState(null);
   const [form, setForm] = useState({
     name_ar: '',
     type: 'sector',
@@ -402,30 +378,6 @@ export default function Departments() {
     setForm({ ...form, responsibilities: updated });
   };
 
-  const openDomainGenerator = (item) => {
-    // Sections don't support domain generation
-    if (item.type === 'section') {
-      return;
-    }
-    
-    // Sectors only need objective
-    if (item.type === 'sector') {
-      if (!item.objective_ar && !item.objective_en) {
-        toast.error('يجب تحديد الهدف أولاً قبل توليد المجالات');
-        return;
-      }
-    } else {
-      // Departments need objective or responsibilities
-      if (!item.objective_ar && !item.objective_en && 
-          (!item.responsibilities || item.responsibilities.length === 0)) {
-        toast.error('يجب تحديد الهدف أو المسؤوليات أولاً قبل توليد المجالات');
-        return;
-      }
-    }
-    setSelectedDepartmentForDomains(item);
-    setShowDomainGenerator(true);
-  };
-
   const getModalTitle = () => {
     if (editingItem) {
       return modalType === 'sector' ? 'تعديل القطاع' : 
@@ -533,7 +485,6 @@ export default function Departments() {
                     onEdit={openEditModal}
                     onDelete={handleDelete}
                     onCreateDepartment={handleCreateDepartment}
-                    onGenerateDomains={openDomainGenerator}
                   />
                 ))}
               </div>
@@ -568,7 +519,6 @@ export default function Departments() {
                       onEdit={openEditModal}
                       onDelete={handleDelete}
                       onCreateSection={handleCreateSection}
-                      onGenerateDomains={openDomainGenerator}
                     />
                   ))}
                 </div>
@@ -809,16 +759,6 @@ export default function Departments() {
           const typeName = itemToDelete.type === 'sector' ? 'القطاع' : itemToDelete.type === 'department' ? 'الإدارة' : 'القسم';
           return `هل أنت متأكد من حذف ${typeName} "${itemToDelete.name_ar}"؟\n\nلا يمكن التراجع عن هذا الإجراء.`;
         })() : ''}
-      />
-
-      {/* Domain Generator Modal */}
-      <DomainGeneratorModal
-        isOpen={showDomainGenerator}
-        onClose={() => {
-          setShowDomainGenerator(false);
-          setSelectedDepartmentForDomains(null);
-        }}
-        department={selectedDepartmentForDomains}
       />
     </div>
   );

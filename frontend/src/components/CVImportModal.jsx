@@ -94,7 +94,7 @@ export default function CVImportModal({ isOpen, onClose, onSuccess }) {
   };
 
   const handleConfirm = async () => {
-    if (!previewData || selectedSkills.length === 0) {
+    if (!previewData || (selectedSkills.length === 0 && selectedPossibleSkills.length === 0)) {
       toast.error('يرجى اختيار مهارة واحدة على الأقل');
       return;
     }
