@@ -411,7 +411,8 @@ router.get('/neo4j',
       );
 
       // Get enrichment data from PostgreSQL for these courses
-      const courseIds = result.courses.map(c => c.course_id).filter(Boolean);
+      // Convert to strings for consistent comparison with PostgreSQL VARCHAR
+      const courseIds = result.courses.map(c => String(c.course_id)).filter(Boolean);
       let enrichmentMap = {};
       
       if (courseIds.length > 0) {
@@ -577,7 +578,7 @@ router.get('/neo4j',
           price: course.price || null,
           skills: skills,
           source: 'neo4j',
-          is_visible: visibleCoursesSet.has(course.course_id),
+          is_visible: visibleCoursesSet.has(String(course.course_id)),
           has_local_overrides: Object.keys(overrides).length > 0 || skillOverrides.add.length > 0 || skillOverrides.remove.length > 0,
           // AI-enriched fields from PostgreSQL
           extracted_skills: enrichment?.extracted_skills || [],
