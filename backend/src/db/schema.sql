@@ -6,8 +6,10 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Drop existing tables (in reverse order due to foreign keys)
+DROP TABLE IF EXISTS visible_courses CASCADE;
 DROP TABLE IF EXISTS nelc_sync_log CASCADE;
 DROP TABLE IF EXISTS course_completion_certificates CASCADE;
+DROP TABLE IF EXISTS employee_training_plan_items CASCADE;
 DROP TABLE IF EXISTS user_hidden_recommendations CASCADE;
 DROP TABLE IF EXISTS admin_course_recommendations CASCADE;
 DROP TABLE IF EXISTS password_reset_tokens CASCADE;
@@ -460,37 +462,6 @@ CREATE TABLE development_plan_items (
 );
 
 -- ============================================
--- EMPLOYEE TRAINING PLAN ITEMS
--- ============================================
-
-CREATE TABLE employee_training_plan_items (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
-    
-    -- For recommended courses (from system courses)
-    course_id UUID REFERENCES courses(id) ON DELETE SET NULL,
-    
-    -- For external courses (added manually by employee)
-    external_course_title VARCHAR(500),
-    external_course_url TEXT,
-    external_course_description TEXT,
-    
-    -- Plan metadata
-    plan_type VARCHAR(20) NOT NULL CHECK (plan_type IN ('recommended', 'external')),
-    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed')),
-    completed_at TIMESTAMP,
-    notes TEXT,
-    
-    -- Certificate reference for completion proof
-    certificate_id UUID REFERENCES course_completion_certificates(id) ON DELETE SET NULL,
-    
-    -- Timestamps
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- ============================================
 -- NOTIFICATIONS
 -- ============================================
 
@@ -643,6 +614,37 @@ CREATE TABLE nelc_sync_log (
     sync_started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     sync_completed_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================
+-- EMPLOYEE TRAINING PLAN ITEMS
+-- ============================================
+
+CREATE TABLE employee_training_plan_items (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    
+    -- For recommended courses (from system courses)
+    course_id UUID REFERENCES courses(id) ON DELETE SET NULL,
+    
+    -- For external courses (added manually by employee)
+    external_course_title VARCHAR(500),
+    external_course_url TEXT,
+    external_course_description TEXT,
+    
+    -- Plan metadata
+    plan_type VARCHAR(20) NOT NULL CHECK (plan_type IN ('recommended', 'external')),
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed')),
+    completed_at TIMESTAMP,
+    notes TEXT,
+    
+    -- Certificate reference for completion proof
+    certificate_id UUID REFERENCES course_completion_certificates(id) ON DELETE SET NULL,
+    
+    -- Timestamps
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ============================================
@@ -913,6 +915,8 @@ COMMENT ON TABLE course_enrichments IS 'Stores AI-enriched metadata for Neo4j co
 COMMENT ON TABLE nelc_sync_log IS 'Audit log for NELC course sync operations';
 COMMENT ON TABLE admin_course_recommendations IS 'Custom course recommendations added by admins for specific users';
 COMMENT ON TABLE user_hidden_recommendations IS 'Courses hidden by admins from specific user recommendations';
+COMMENT ON TABLE employee_training_plan_items IS 'Stores individual course selections for employee training plans per skill';
+COMMENT ON TABLE visible_courses IS 'Whitelist of courses visible to employees. Courses not in this table are hidden.';
 
 -- Column comments
 COMMENT ON COLUMN users.national_id IS 'National ID number - main learner identifier, can only be set by admins';
