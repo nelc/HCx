@@ -219,11 +219,11 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
     const interests = user.interests || [];
     const desiredDomainIds = user.desired_domains || [];
 
-    // Process hidden courses
-    const [userHiddenResult, globalHiddenResult] = hiddenCoursesResults;
+    // Process visibility: visible_courses is a WHITELIST of courses allowed for employees
+    // user_hidden_recommendations is courses the user has personally hidden
+    const [userHiddenResult, visibleCoursesResult] = hiddenCoursesResults;
     const userHiddenCourseIds = new Set(userHiddenResult.rows.map(h => h.course_id));
-    const globalHiddenCourseIds = new Set(globalHiddenResult.rows.map(h => h.course_id));
-    const allHiddenCourseIds = new Set([...userHiddenCourseIds, ...globalHiddenCourseIds]);
+    const visibleCourseIds = new Set(visibleCoursesResult.rows.map(v => v.course_id));
 
     // Process certificates into maps for quick lookup
     const courseCertificateMap = new Map();
@@ -536,11 +536,22 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
       !testCourseIds.has(r.course_id) && !interestCourseIds.has(r.course_id)
     );
 
-    if (allHiddenCourseIds.size > 0) {
-      testBasedRecommendations = testBasedRecommendations.filter(r => !allHiddenCourseIds.has(r.course_id));
-      interestBasedRecommendations = interestBasedRecommendations.filter(r => !allHiddenCourseIds.has(r.course_id));
-      careerBasedRecommendations = careerBasedRecommendations.filter(r => !allHiddenCourseIds.has(r.course_id));
-    }
+    // Filter recommendations:
+    // 1. Only show courses in the visible_courses whitelist (if whitelist exists)
+    // 2. Exclude courses the user has personally hidden
+    const filterRecommendations = (recs) => {
+      return recs.filter(r => {
+        // Exclude user-hidden courses
+        if (userHiddenCourseIds.has(r.course_id)) return false;
+        // Only include if in visible_courses whitelist (or whitelist is empty for backwards compat)
+        if (visibleCourseIds.size > 0 && !visibleCourseIds.has(r.course_id)) return false;
+        return true;
+      });
+    };
+    
+    testBasedRecommendations = filterRecommendations(testBasedRecommendations);
+    interestBasedRecommendations = filterRecommendations(interestBasedRecommendations);
+    careerBasedRecommendations = filterRecommendations(careerBasedRecommendations);
 
     // ============ PHASE 7: Add completion info to all recommendations ============
     const addCompletionInfo = (recommendations, isAdminCourse = false) => {

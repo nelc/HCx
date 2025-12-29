@@ -86,7 +86,96 @@ function calculateRelevanceScore(courseData, skillData) {
   return Math.min(score, 1.5);
 }
 
-// All routes require authentication
+/**
+ * GET /api/courses/neo4j/debug-schema
+ * TEMPORARY: Debug endpoint to see all Course node properties in Neo4j
+ * NOTE: This endpoint does NOT require authentication (for debugging only)
+ */
+router.get('/neo4j/debug-schema', async (req, res) => {
+  try {
+    // Query to get all properties of a sample Course node
+    const courseQuery = `
+      MATCH (c:Course)
+      WITH c, keys(c) as allKeys
+      RETURN allKeys as course_properties, c as sample_course
+      LIMIT 1
+    `;
+    
+    // Query to get Skill node properties
+    const skillQuery = `
+      MATCH (s:Skill)
+      WITH s, keys(s) as allKeys
+      RETURN allKeys as skill_properties, s as sample_skill
+      LIMIT 1
+    `;
+    
+    // Query to explore Course-Skill relationship
+    const relationshipQuery = `
+      MATCH (c:Course)-[r]->(s:Skill)
+      RETURN type(r) as relationship_type, keys(r) as relationship_properties, r as sample_relationship
+      LIMIT 1
+    `;
+    
+    // Query to get a course with its skills
+    const courseWithSkillsQuery = `
+      MATCH (c:Course)-[r]->(s:Skill)
+      WITH c, collect({
+        skill: s,
+        relationship: r,
+        rel_type: type(r)
+      }) as skills
+      RETURN c.course_id as course_id, c.course_name as course_name, skills
+      LIMIT 1
+    `;
+    
+    // Count queries
+    const countQuery = `
+      MATCH (c:Course) WITH count(c) as courses
+      MATCH (s:Skill) WITH courses, count(s) as skills
+      MATCH ()-[r]->(:Skill) WITH courses, skills, count(r) as relationships
+      RETURN courses, skills, relationships
+    `;
+    
+    const [courseResult, skillResult, relResult, courseWithSkills, counts] = await Promise.all([
+      neo4jApi.makeRequest('POST', '/query', { data: { query: courseQuery } }),
+      neo4jApi.makeRequest('POST', '/query', { data: { query: skillQuery } }),
+      neo4jApi.makeRequest('POST', '/query', { data: { query: relationshipQuery } }),
+      neo4jApi.makeRequest('POST', '/query', { data: { query: courseWithSkillsQuery } }),
+      neo4jApi.makeRequest('POST', '/query', { data: { query: countQuery } })
+    ]);
+    
+    res.json({
+      message: 'Neo4j Schema Debug Info - Courses, Skills & Relationships',
+      counts: {
+        courses: counts?.courses || counts?.[0]?.courses || 0,
+        skills: counts?.skills || counts?.[0]?.skills || 0,
+        relationships: counts?.relationships || counts?.[0]?.relationships || 0
+      },
+      courseNode: {
+        properties: Array.isArray(courseResult) ? courseResult[0]?.course_properties : courseResult?.course_properties,
+        sample: Array.isArray(courseResult) ? courseResult[0]?.sample_course : courseResult?.sample_course
+      },
+      skillNode: {
+        properties: Array.isArray(skillResult) ? skillResult[0]?.skill_properties : skillResult?.skill_properties,
+        sample: Array.isArray(skillResult) ? skillResult[0]?.sample_skill : skillResult?.sample_skill
+      },
+      relationship: {
+        type: Array.isArray(relResult) ? relResult[0]?.relationship_type : relResult?.relationship_type,
+        properties: Array.isArray(relResult) ? relResult[0]?.relationship_properties : relResult?.relationship_properties,
+        sample: Array.isArray(relResult) ? relResult[0]?.sample_relationship : relResult?.sample_relationship
+      },
+      courseWithSkills: Array.isArray(courseWithSkills) ? courseWithSkills[0] : courseWithSkills
+    });
+  } catch (error) {
+    console.error('Debug schema error:', error);
+    res.status(error.status || 500).json({
+      error: 'Failed to get schema debug info',
+      message: error.message
+    });
+  }
+});
+
+// All routes below require authentication
 router.use(authenticate);
 
 /**
@@ -476,7 +565,8 @@ router.get('/neo4j',
           description_ar: descAr || descEn,
           description_en: descEn || descAr,
           url: generatedUrl || toFuturexUrl({ url: rawUrl, course_id: course.course_id, nelc_course_id: nelcCourseId }),
-          provider: overrides.provider || course.provider || '',
+          platform: course.platform || overrides.provider || course.provider || '', // Platform from Neo4j ON_PLATFORM relationship
+          provider: overrides.provider || course.provider || '', // Keep for backward compatibility
           duration_hours: overrides.duration_hours || course.duration_hours || null,
           difficulty_level: overrides.difficulty_level || course.difficulty_level || 'beginner',
           language: overrides.language || course.language || 'ar',
@@ -504,14 +594,24 @@ router.get('/neo4j',
       });
 
       // For employees, filter to only show visible courses (whitelist approach)
-      // Admins and training officers see all courses
+      // Admins and training officers see all courses, but visible courses first
       let finalCourses = mappedCourses;
       let finalTotal = result.total;
       
       if (!isAdminOrOfficer) {
-        finalCourses = validCourses.filter(c => c.is_visible);
+        // Employees only see visible courses
+        finalCourses = mappedCourses.filter(c => c.is_visible);
         finalTotal = finalCourses.length;
         console.log(`👁️ Employee view: filtered to ${finalCourses.length} visible courses`);
+      } else {
+        // Admins/Training Officers: sort to show visible (non-hidden) courses first
+        finalCourses = mappedCourses.sort((a, b) => {
+          // Visible courses first (is_visible: true comes before false)
+          if (a.is_visible && !b.is_visible) return -1;
+          if (!a.is_visible && b.is_visible) return 1;
+          return 0; // Maintain original order for same visibility status
+        });
+        console.log(`👁️ Admin view: sorted ${finalCourses.length} courses (visible first)`);
       }
 
       console.log(`✅ Found ${finalCourses.length} courses in Neo4j (total: ${finalTotal})`);
@@ -974,7 +1074,7 @@ router.post('/neo4j/:courseId/toggle-hidden',
       // Ensure visible_courses table exists (whitelist of courses visible to employees)
       await db.query(`
         CREATE TABLE IF NOT EXISTS visible_courses (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
           course_id VARCHAR(255) NOT NULL UNIQUE,
           made_visible_by UUID,
           visible_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -1563,10 +1663,11 @@ router.get('/',
 
       const countResult = await db.query(countQuery, countParams);
 
-      // Transform URLs to FutureX format
+      // Transform URLs to FutureX format and add platform field
       const coursesWithFuturexUrls = result.rows.map(course => ({
         ...course,
-        url: toFuturexUrl({ url: course.url, nelc_course_id: course.nelc_course_id, course_id: course.id })
+        url: toFuturexUrl({ url: course.url, nelc_course_id: course.nelc_course_id, course_id: course.id }),
+        platform: course.provider || '' // Use provider as platform for local courses
       }));
 
       res.json({

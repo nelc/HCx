@@ -159,7 +159,7 @@ export default function DashboardLayout() {
             {!isCollapsed && (
               <div>
                 <h1 className="font-bold text-primary-700 text-lg">HCx</h1>
-                <p className="text-xs text-slate-500">نظام تقييم التدريب</p>
+                <p className="text-xs text-slate-500">نظام التطوير المهني</p>
               </div>
             )}
           </div>

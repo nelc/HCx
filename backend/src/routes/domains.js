@@ -72,6 +72,60 @@ router.get('/', authenticate, async (req, res) => {
   }
 });
 
+// Get domains and skills for employee interests selection (PostgreSQL only)
+// IMPORTANT: This route MUST be defined BEFORE /:id to avoid "course-skills" being treated as a UUID
+// Returns only admin-defined domains and their linked skills
+router.get('/course-skills', authenticate, async (req, res) => {
+  try {
+    console.log('📚 Fetching domains and skills for interests selection...');
+    
+    const result = await db.query(`
+      SELECT 
+        td.id,
+        td.name_ar,
+        td.name_en,
+        td.color,
+        td.description_ar,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', s.id,
+              'name_ar', s.name_ar,
+              'name_en', s.name_en
+            )
+            ORDER BY s.name_ar
+          ) FILTER (WHERE s.id IS NOT NULL),
+          '[]'::json
+        ) as skills
+      FROM training_domains td
+      LEFT JOIN skills s ON s.domain_id = td.id
+      WHERE td.is_active = true
+      GROUP BY td.id
+      ORDER BY td.name_ar
+    `);
+
+    // Filter to only domains with skills
+    const domains = result.rows.filter(d => d.skills && d.skills.length > 0);
+    const totalSkills = domains.reduce((sum, d) => sum + d.skills.length, 0);
+
+    console.log(`✅ Returning ${domains.length} domains with ${totalSkills} total skills`);
+
+    res.json({
+      domains,
+      stats: {
+        total_domains: domains.length,
+        total_skills: totalSkills
+      }
+    });
+  } catch (error) {
+    console.error('❌ Get course-skills error:', error);
+    res.status(500).json({ 
+      error: 'Failed to get course-derived skills',
+      message: error.message 
+    });
+  }
+});
+
 // Get single domain with skills
 router.get('/:id', authenticate, async (req, res) => {
   try {

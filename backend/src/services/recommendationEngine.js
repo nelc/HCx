@@ -438,7 +438,8 @@ async function generateEnhancedRecommendations(userId, analysisResult, examConte
           description_ar: rec.description_ar || courseDetails.description_ar,
           description_en: rec.description_en || courseDetails.description_en,
           url: rec.url || courseDetails.url,
-          provider: rec.provider || courseDetails.provider,
+          platform: rec.platform || courseDetails.provider, // Use Neo4j platform, fallback to local provider
+          provider: rec.provider || courseDetails.provider, // Keep for backward compatibility
           duration_hours: rec.duration_hours || courseDetails.duration_hours,
           difficulty_level: rec.difficulty_level || courseDetails.difficulty_level,
           subject: rec.subject || courseDetails.subject,
@@ -736,6 +737,7 @@ async function getSkillBasedRecommendations(userGaps, userCategoryKey, limit = 2
           description_ar: row.description_ar,
           description_en: row.description_en,
           url: row.url,
+          platform: row.provider, // Use provider as platform fallback for local DB courses
           provider: row.provider,
           duration_hours: row.duration_hours,
           difficulty_level: row.difficulty_level,
@@ -884,6 +886,7 @@ async function getSkillBasedRecommendations(userGaps, userCategoryKey, limit = 2
           description_ar: row.description_ar,
           description_en: row.description_en,
           url: row.url,
+          platform: row.provider, // Use provider as platform fallback for local DB courses
           provider: row.provider,
           duration_hours: row.duration_hours,
           difficulty_level: row.difficulty_level,

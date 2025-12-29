@@ -18,267 +18,6 @@ import { getRoleLabel } from '../utils/helpers';
 import CVImportModal from '../components/CVImportModal';
 import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
 
-// Static skills data organized by subjects
-const SKILLS_DATA = [
-  {
-    id: 'thinking',
-    subject: 'التفكير والتحليل',
-    color: 'bg-slate-600',
-    skills: [
-      'التحليل النقدي',
-      'حل المشكلات',
-      'اتخاذ القرار',
-      'التفكير الاستراتيجي',
-      'التحليل المنطقي',
-    ],
-  },
-  {
-    id: 'communication',
-    subject: 'الاتصال',
-    color: 'bg-blue-500',
-    skills: [
-      'التواصل الشفهي والكتابي',
-      'إعداد التقارير',
-      'العرض والإلقاء',
-      'بناء العلاقات',
-      'التفاوض',
-    ],
-  },
-  {
-    id: 'work-skills',
-    subject: 'مهارات العمل',
-    color: 'bg-indigo-500',
-    skills: [
-      'العمل الجماعي',
-      'إدارة الوقت',
-      'إدارة الأولويات',
-      'الالتزام والانضباط',
-      'التعلم السريع والتكيف',
-    ],
-  },
-  {
-    id: 'project-management',
-    subject: 'إدارة المشاريع',
-    color: 'bg-orange-500',
-    skills: [
-      'إدارة المشاريع (PMI / Agile / Scrum)',
-      'إدارة النطاق والتكلفة والجودة',
-      'إدارة المخاطر',
-      'إدارة أصحاب المصلحة',
-      'كتابة خطط المشاريع',
-      'إدارة الجدولة (Gantt, Critical Path)',
-      'مؤشرات الأداء للمشاريع (KPIs)',
-      'إدارة PMO',
-    ],
-  },
-  {
-    id: 'finance',
-    subject: 'المالية والمحاسبة',
-    color: 'bg-yellow-500',
-    skills: [
-      'التحليل المالي',
-      'إعداد الميزانيات',
-      'التوقعات المالية',
-      'التقارير المالية',
-      'تحليل التكاليف',
-      'إدارة النقد',
-      'التدقيق الداخلي',
-      'إدارة المخاطر المالية',
-      'IFRS / SOCPA',
-      'التسويات البنكية',
-    ],
-  },
-  {
-    id: 'tech',
-    subject: 'التقنية والتحول الرقمي',
-    color: 'bg-blue-600',
-    skills: [
-      'تطوير البرمجيات',
-      'هندسة البنية المؤسسية',
-      'أمن المعلومات',
-      'إدارة قواعد البيانات',
-      'إدارة الأنظمة',
-      'إدارة الشبكات',
-      'DevOps',
-      'Cloud Computing',
-      'تحليل الأنظمة',
-      'هندسة الحلول',
-      'اختبار البرمجيات QA',
-      'إدارة المنتجات الرقمية',
-    ],
-  },
-  {
-    id: 'hr',
-    subject: 'الموارد البشرية',
-    color: 'bg-red-500',
-    skills: [
-      'تخطيط القوى العاملة',
-      'الاستقطاب والاختيار',
-      'إدارة الأداء',
-      'التدريب والتطوير',
-      'التعويضات والمزايا',
-      'إدارة العلاقات العمالية',
-      'الاستشارات الوظيفية',
-      'تطوير القادة',
-      'إدارة المواهب',
-      'تحليل الوظائف والجدارات',
-    ],
-  },
-  {
-    id: 'procurement',
-    subject: 'العقود والمشتريات',
-    color: 'bg-purple-500',
-    skills: [
-      'إدارة سلسلة الإمداد',
-      'إعداد العقود',
-      'تحليل العروض',
-      'التقييم الفني والمالي',
-      'التفاوض التجاري',
-      'اللائحة الموحدة للمشتريات الحكومية',
-      'Vendor Management',
-      'إدارة المناقصات',
-      'التخطيط الشرائي',
-    ],
-  },
-  {
-    id: 'legal',
-    subject: 'القانونية',
-    color: 'bg-gray-600',
-    skills: [
-      'الصياغة القانونية',
-      'المراجعة والامتثال',
-      'تحليل المخاطر القانونية',
-      'إعداد اللوائح والسياسات',
-      'الترافع وحل النزاعات',
-      'قانون العمل',
-      'قانون الشركات',
-      'الملكية الفكرية',
-      'التعاقدات الحكومية',
-      'حوكمة الأنظمة',
-    ],
-  },
-  {
-    id: 'data-ai',
-    subject: 'البيانات والذكاء الاصطناعي',
-    color: 'bg-green-500',
-    skills: [
-      'تحليل البيانات',
-      'إدارة البيانات (Data Governance)',
-      'تصور البيانات (Power BI / Tableau)',
-      'النمذجة الإحصائية',
-      'علم البيانات',
-      'ML & AI Basics',
-      'إدارة جودة البيانات',
-      'بناء لوحات التحكم',
-      'RAG / Vector Databases',
-      'مهارات SQL / Python',
-    ],
-  },
-  {
-    id: 'warehouse',
-    subject: 'المستودعات وسلاسل الإمداد',
-    color: 'bg-amber-700',
-    skills: [
-      'إدارة المخزون',
-      'التخطيط اللوجستي',
-      'مراقبة الجودة',
-      'إدارة دورة التوريد',
-      'أنظمة المستودعات (WMS)',
-      'التحسين المستمر',
-    ],
-  },
-  {
-    id: 'strategy',
-    subject: 'التخطيط والاستراتيجية',
-    color: 'bg-orange-600',
-    skills: [
-      'بناء الاستراتيجيات',
-      'إدارة المبادرات والبرامج',
-      'إدارة الأداء الاستراتيجي',
-      'إعداد مؤشرات الأداء',
-      'تحليل البيئة الداخلية والخارجية',
-      'دراسات الجدوى',
-      'إدارة المحافظ',
-      'تحليل البيانات الاستراتيجية',
-      'بناء تقارير المتابعة التنفيذية',
-    ],
-  },
-  {
-    id: 'business',
-    subject: 'إدارة الأعمال والمنتجات',
-    color: 'bg-sky-600',
-    skills: [
-      'نماذج الأعمال',
-      'تحليل السوق',
-      'إدارة المنتج Product Management',
-      'تصميم تجربة المستخدم',
-      'تحليل العملاء',
-      'Journey Mapping',
-      'قيادة التطوير',
-      'دراسة المنافسين',
-      'بناء عروض القيمة',
-    ],
-  },
-  {
-    id: 'sales',
-    subject: 'المبيعات والعلاقات',
-    color: 'bg-emerald-500',
-    skills: [
-      'مهارات البيع الاحترافي',
-      'إدارة الحسابات (Account Management)',
-      'الإقناع والتفاوض',
-      'إدارة علاقات العملاء',
-      'بناء شبكات العلاقات',
-      'تحليل احتياجات العميل',
-      'متابعة الصفقات والإغلاقات',
-      'Customer Success',
-    ],
-  },
-  {
-    id: 'marketing',
-    subject: 'التسويق والاتصال المؤسسي',
-    color: 'bg-cyan-600',
-    skills: [
-      'التخطيط التسويقي',
-      'المحتوى والإبداع',
-      'إدارة الحملات',
-      'السوشيال ميديا',
-      'إدارة الهوية',
-      'قياس الأثر التسويقي',
-      'استراتيجيات العلامة التجارية',
-    ],
-  },
-  {
-    id: 'governance',
-    subject: 'التحليل والحوكمة والجودة',
-    color: 'bg-stone-600',
-    skills: [
-      'إدارة الجودة',
-      'التحسين المستمر',
-      'مراقبة الالتزام',
-      'التوثيق وصنع السياسات',
-      'إدارة المخاطر',
-      'التدقيق الداخلي',
-      'تقييم العمليات',
-    ],
-  },
-  {
-    id: 'leadership',
-    subject: 'القيادة والإدارة',
-    color: 'bg-violet-600',
-    skills: [
-      'اتخاذ القرار',
-      'إدارة التغيير',
-      'بناء فرق عالية الأداء',
-      'التفكير الاستراتيجي',
-      'إدارة الأزمات',
-      'الحوكمة',
-      'بناء الثقافة المؤسسية',
-      'قيادة الابتكار',
-    ],
-  },
-];
-
 export default function Settings() {
   const { user, updateUser } = useAuthStore();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -317,12 +56,17 @@ export default function Settings() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [domains, setDomains] = useState([]);
   const [loadingDomains, setLoadingDomains] = useState(false);
+  
+  // Course-derived skills state (replaces static SKILLS_DATA)
+  const [courseSkillsDomains, setCourseSkillsDomains] = useState([]);
+  const [loadingCourseSkills, setLoadingCourseSkills] = useState(false);
 
-  // Fetch employee profile and domains
+  // Fetch employee profile, domains, and course-derived skills
   useEffect(() => {
     if (user?.role === 'employee' && activeTab === 'employee-profile') {
       fetchEmployeeProfile();
       fetchDomains();
+      fetchCourseSkills();
     }
   }, [activeTab, user]);
 
@@ -335,6 +79,22 @@ export default function Settings() {
       console.error('Failed to fetch domains:', error);
     } finally {
       setLoadingDomains(false);
+    }
+  };
+
+  // Fetch course-derived skills for interests selection
+  const fetchCourseSkills = async () => {
+    setLoadingCourseSkills(true);
+    try {
+      const response = await api.get('/domains/course-skills');
+      setCourseSkillsDomains(response.data?.domains || []);
+      console.log('📚 Loaded course-derived skills:', response.data?.stats);
+    } catch (error) {
+      console.error('Failed to fetch course-derived skills:', error);
+      // Fallback to empty - UI will show message
+      setCourseSkillsDomains([]);
+    } finally {
+      setLoadingCourseSkills(false);
     }
   };
 
@@ -389,25 +149,34 @@ export default function Settings() {
     }
   };
 
-  const toggleSkillInterest = (subjectId, skillName) => {
-    const skillKey = `${subjectId}:${skillName}`;
+  // Toggle skill interest - now uses skill ID and English name for recommendation matching
+  // Format: "skillId:skillNameEn" (or "domainId:skillNameEn" if no skill ID)
+  const toggleSkillInterest = (domainId, skill) => {
+    // Create a key that includes the English name for recommendation matching
+    const skillId = skill.id || `${domainId}-${(skill.name_en || skill.name_ar).toLowerCase().replace(/\s+/g, '-')}`;
+    const skillKey = `${skillId}:${skill.name_en || skill.name_ar}`;
+    
     setEmployeeProfile(prev => {
       const interests = prev.interests || [];
-      if (interests.includes(skillKey)) {
-        return { ...prev, interests: interests.filter(key => key !== skillKey) };
+      // Check if already selected (match by skill ID prefix)
+      const existingIndex = interests.findIndex(key => key.startsWith(`${skillId}:`));
+      if (existingIndex !== -1) {
+        return { ...prev, interests: interests.filter((_, idx) => idx !== existingIndex) };
       } else {
         return { ...prev, interests: [...interests, skillKey] };
       }
     });
   };
 
-  const isSkillSelected = (subjectId, skillName) => {
-    const skillKey = `${subjectId}:${skillName}`;
-    return (employeeProfile.interests || []).includes(skillKey);
+  // Check if skill is selected - matches by skill ID
+  const isSkillSelected = (domainId, skill) => {
+    const skillId = skill.id || `${domainId}-${(skill.name_en || skill.name_ar).toLowerCase().replace(/\s+/g, '-')}`;
+    return (employeeProfile.interests || []).some(key => key.startsWith(`${skillId}:`));
   };
 
-  const getSelectedCountForSubject = (subjectId) => {
-    return (employeeProfile.interests || []).filter(key => key.startsWith(`${subjectId}:`)).length;
+  // Get count of selected skills for a domain
+  const getSelectedCountForSubject = (domainId, skills) => {
+    return (skills || []).filter(skill => isSkillSelected(domainId, skill)).length;
   };
 
   const handleChangePassword = async (e) => {
@@ -664,82 +433,147 @@ export default function Settings() {
                     />
                   </div>
 
-                  {/* Interests */}
+                  {/* Interests - Dynamic from course-derived skills */}
                   <div>
                     <label className="label">الاهتمامات (المهارات والمواضيع) *</label>
-                    <p className="text-sm text-slate-500 mb-3">اختر المجالات والمهارات التي تهتم بها</p>
-                    <div className="space-y-3 max-h-[600px] overflow-y-auto p-4 bg-slate-50 rounded-xl">
-                      {SKILLS_DATA.map((subject) => {
-                        const selectedCount = getSelectedCountForSubject(subject.id);
-                        const isExpanded = expandedSubjects[subject.id];
-                        
-                        return (
-                          <div key={subject.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                            {/* Subject Header */}
-                            <button
-                              type="button"
-                              onClick={() => toggleSubjectExpand(subject.id)}
-                              className="w-full flex items-center justify-between p-4 hover:bg-slate-50 transition-colors"
-                            >
-                              <div className="flex items-center gap-3">
-                                <div className={`w-3 h-3 rounded-full ${subject.color}`}></div>
-                                <span className="font-semibold text-slate-800">{subject.subject}</span>
-                                {selectedCount > 0 && (
-                                  <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
-                                    {selectedCount} مختارة
-                                  </span>
-                                )}
-                              </div>
-                              <ChevronDownIcon 
-                                className={`w-5 h-5 text-slate-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} 
-                              />
-                            </button>
-                            
-                            {/* Skills List */}
-                            <AnimatePresence>
-                              {isExpanded && (
-                                <motion.div
-                                  initial={{ height: 0, opacity: 0 }}
-                                  animate={{ height: 'auto', opacity: 1 }}
-                                  exit={{ height: 0, opacity: 0 }}
-                                  transition={{ duration: 0.2 }}
-                                  className="overflow-hidden"
-                                >
-                                  <div className="px-4 pb-4 pt-2 border-t border-slate-100">
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                      {subject.skills.map((skill, skillIndex) => (
-                                        <label
-                                          key={skillIndex}
-                                          className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
-                                            isSkillSelected(subject.id, skill)
-                                              ? 'bg-primary-50 border-primary-400'
-                                              : 'bg-slate-50 border-slate-200 hover:border-primary-300'
-                                          }`}
-                                        >
-                                          <input
-                                            type="checkbox"
-                                            checked={isSkillSelected(subject.id, skill)}
-                                            onChange={() => toggleSkillInterest(subject.id, skill)}
-                                            className="w-5 h-5 text-primary-600 rounded focus:ring-primary-500"
-                                          />
-                                          <span className={`text-sm ${isSkillSelected(subject.id, skill) ? 'text-primary-700 font-medium' : 'text-slate-700'}`}>
-                                            {skill}
-                                          </span>
-                                        </label>
-                                      ))}
-                                    </div>
+                    <p className="text-sm text-slate-500 mb-3">اختر المجالات والمهارات التي تهتم بها - مرتبطة بالدورات المتاحة</p>
+                    
+                    {loadingCourseSkills ? (
+                      <div className="flex justify-center items-center py-12 bg-slate-50 rounded-xl">
+                        <div className="text-center">
+                          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary-700 mx-auto mb-3"></div>
+                          <p className="text-sm text-slate-500">جاري تحميل المهارات المتاحة...</p>
+                        </div>
+                      </div>
+                    ) : courseSkillsDomains.length === 0 ? (
+                      <div className="text-center py-8 bg-slate-50 rounded-xl border border-slate-200">
+                        <p className="text-slate-500 mb-2">لا توجد مهارات متاحة حالياً</p>
+                        <p className="text-xs text-slate-400">سيتم إضافة المهارات عند توفر دورات في النظام</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 max-h-[600px] overflow-y-auto p-4 bg-slate-50 rounded-xl">
+                        {courseSkillsDomains.map((domain) => {
+                          const selectedCount = getSelectedCountForSubject(domain.id, domain.skills);
+                          const isExpanded = expandedSubjects[domain.id];
+                          
+                          return (
+                            <div key={domain.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                              {/* Domain Header */}
+                              <button
+                                type="button"
+                                onClick={() => toggleSubjectExpand(domain.id)}
+                                className="w-full flex items-center justify-between p-4 hover:bg-slate-50 transition-colors"
+                              >
+                                <div className="flex items-center gap-3">
+                                  <div 
+                                    className="w-3 h-3 rounded-full" 
+                                    style={{ backgroundColor: domain.color || '#502390' }}
+                                  ></div>
+                                  <div className="text-right">
+                                    <span className="font-semibold text-slate-800">{domain.name_ar}</span>
+                                    {domain.name_en && domain.name_en !== domain.name_ar && (
+                                      <span className="text-xs text-slate-500 mr-2">({domain.name_en})</span>
+                                    )}
                                   </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                          </div>
-                        );
-                      })}
-                    </div>
+                                  <span className="text-xs text-slate-400">
+                                    {domain.skills?.length || 0} مهارة
+                                  </span>
+                                  {selectedCount > 0 && (
+                                    <span className="px-2 py-0.5 text-xs font-medium bg-primary-100 text-primary-700 rounded-full">
+                                      {selectedCount} مختارة
+                                    </span>
+                                  )}
+                                </div>
+                                <ChevronDownIcon 
+                                  className={`w-5 h-5 text-slate-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} 
+                                />
+                              </button>
+                              
+                              {/* Skills List */}
+                              <AnimatePresence>
+                                {isExpanded && (
+                                  <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: 'auto', opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    transition={{ duration: 0.2 }}
+                                    className="overflow-hidden"
+                                  >
+                                    <div className="px-4 pb-4 pt-2 border-t border-slate-100">
+                                      {domain.skills && domain.skills.length > 0 ? (
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                          {domain.skills.map((skill, skillIndex) => (
+                                            <label
+                                              key={skill.id || skillIndex}
+                                              className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                                                isSkillSelected(domain.id, skill)
+                                                  ? 'bg-primary-50 border-primary-400'
+                                                  : 'bg-slate-50 border-slate-200 hover:border-primary-300'
+                                              }`}
+                                            >
+                                              <input
+                                                type="checkbox"
+                                                checked={isSkillSelected(domain.id, skill)}
+                                                onChange={() => toggleSkillInterest(domain.id, skill)}
+                                                className="w-5 h-5 text-primary-600 rounded focus:ring-primary-500"
+                                              />
+                                              <div className="flex-1">
+                                                <span className={`text-sm block ${isSkillSelected(domain.id, skill) ? 'text-primary-700 font-medium' : 'text-slate-700'}`}>
+                                                  {skill.name_ar}
+                                                </span>
+                                                {skill.name_en && skill.name_en !== skill.name_ar && (
+                                                  <span className="text-xs text-slate-400">{skill.name_en}</span>
+                                                )}
+                                              </div>
+                                            </label>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <p className="text-sm text-slate-400 text-center py-4">لا توجد مهارات في هذا المجال</p>
+                                      )}
+                                    </div>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    
                     {employeeProfile.interests?.length > 0 && (
-                      <p className="text-sm text-primary-600 mt-2">
-                        تم اختيار {employeeProfile.interests.length} مهارة/مهارات
-                      </p>
+                      <div className="mt-3">
+                        <p className="text-sm text-primary-600 font-medium mb-2">
+                          تم اختيار {employeeProfile.interests.length} مهارة/مهارات
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {employeeProfile.interests.map((interestKey, idx) => {
+                            // Extract skill name from key format "skillId:skillName"
+                            const parts = interestKey.split(':');
+                            const skillName = parts.length > 1 ? parts.slice(1).join(':') : interestKey;
+                            return (
+                              <span
+                                key={idx}
+                                className="inline-flex items-center gap-1 px-2 py-1 bg-primary-100 text-primary-700 rounded-full text-xs"
+                              >
+                                {skillName}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEmployeeProfile(prev => ({
+                                      ...prev,
+                                      interests: (prev.interests || []).filter(k => k !== interestKey)
+                                    }));
+                                  }}
+                                  className="hover:text-primary-900 font-bold"
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
                     )}
                   </div>
 

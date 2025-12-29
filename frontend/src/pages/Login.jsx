@@ -154,7 +154,7 @@ export default function Login() {
           </div>
 
           <h2 className="text-3xl font-bold text-white mb-4">
-            نظام تقييم الاحتياجات التدريبية
+            نظام التطوير المهني
           </h2>
 
         </motion.div>

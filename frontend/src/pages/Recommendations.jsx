@@ -330,8 +330,8 @@ export default function Recommendations() {
                   <span>{rec.duration_hours} ساعة</span>
                 </div>
               )}
-              {rec.provider && (
-                <span className="text-slate-500">• {rec.provider}</span>
+              {rec.platform && (
+                <span className="text-slate-500">• {rec.platform}</span>
               )}
               {/* Show completion info with source if completed */}
               {rec.is_completed && rec.completion_certificate && (

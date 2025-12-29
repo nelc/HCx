@@ -207,7 +207,7 @@ async function createUserNode(userData) {
 }
 
 /**
- * Create relationship between Course and Skill (Course -TEACHES-> Skill)
+ * Create relationship between Course and Skill (Course -ALIGNS_TO_SKILL-> Skill)
  */
 async function createCourseSkillRelationship(courseId, skillId, relevanceScore = 1.0) {
   return await makeRequest('POST', '/relationship', {
@@ -215,7 +215,7 @@ async function createCourseSkillRelationship(courseId, skillId, relevanceScore =
       from_label: 'Course',
       from_key: 'course_id',
       from_id: courseId,
-      rel_type: 'TEACHES',
+      rel_type: 'ALIGNS_TO_SKILL',
       to_label: 'Skill',
       to_key: 'skill_id',
       to_id: skillId,
@@ -299,46 +299,35 @@ async function updateCourseNode(courseData) {
 
 /**
  * Get course recommendations for a user using graph traversal
- * Matches User -NEEDS-> Skill <-TEACHES- Course
+ * Matches User -NEEDS-> Skill <-ALIGNS_TO_SKILL- Course
  * Returns courses ranked by relevance score (gap_score * relevance_score)
- * PRIORITIZES English skill names (s.name_en) in output
+ * PRIORITIZES English skill names (s.skill_name) in output
  */
 async function getRecommendationsForUser(userId, limit = 10) {
   const query = `
-    MATCH (u:User {user_id: '${userId}'})-[n:NEEDS]->(s:Skill)<-[t:TEACHES]-(c:Course)
+    MATCH (u:User {user_id: '${userId}'})-[n:NEEDS]->(s:Skill)<-[t:ALIGNS_TO_SKILL]-(c:Course)
     WITH c, s, n, t, (n.gap_score * t.relevance_score) as match_score
     WITH c, 
-         collect(DISTINCT COALESCE(s.name_en, s.name_ar)) as matching_skills,
+         collect(DISTINCT s.skill_name) as matching_skills,
          SUM(match_score) as base_score,
          count(DISTINCT s) as skill_coverage,
          MAX(n.priority) as max_priority
     WITH c, matching_skills, skill_coverage, max_priority,
          base_score * (1.0 + (skill_coverage - 1) * 0.15) as recommendation_score
+    OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
     RETURN 
       c.course_id as course_id,
-      c.name_ar as name_ar,
-      c.name_en as name_en,
-      c.description_ar as description_ar,
-      c.description_en as description_en,
-      c.url as url,
-      c.provider as provider,
-      c.duration_hours as duration_hours,
-      c.difficulty_level as difficulty_level,
-      c.subject as subject,
-      c.price as price,
+      c.course_name as name_ar,
+      c.course_name_en as name_en,
+      c.course_description as description_ar,
+      c.course_description_en as description_en,
+      c.course_URL as url,
+      c.course_language as language,
       matching_skills,
       recommendation_score,
       skill_coverage,
       max_priority,
-      c.extracted_skills as extracted_skills,
-      c.learning_outcomes as learning_outcomes,
-      c.target_audience as target_audience,
-      c.career_paths as career_paths,
-      c.industry_tags as industry_tags,
-      c.quality_indicators as quality_indicators,
-      c.summary_ar as summary_ar,
-      c.summary_en as summary_en,
-      c.enriched_at as enriched_at
+      src.source_name as platform
     ORDER BY recommendation_score DESC, max_priority DESC, skill_coverage DESC
     LIMIT ${limit}
   `;
@@ -397,18 +386,18 @@ function getValidDifficultyLevels(difficulty) {
 
 /**
  * Get enhanced course recommendations for a user using graph traversal
- * Matches User -NEEDS-> Skill <-TEACHES- Course
+ * Matches User -NEEDS-> Skill <-ALIGNS_TO_SKILL- Course
  * The key matching is through skill relationships - if a course teaches a skill the user needs,
  * it's relevant regardless of the course's subject category.
  * Filters courses by:
- * - Skill match through graph relationships (Course -TEACHES-> Skill <-NEEDS- User)
+ * - Skill match through graph relationships (Course -ALIGNS_TO_SKILL-> Skill <-NEEDS- User)
  * - Difficulty level based on skill proficiency (users can see courses at or below their level)
  * Returns courses ranked by relevance score (gap_score * relevance_score)
- * PRIORITIZES English skill names (s.name_en) in matching output
+ * PRIORITIZES English skill names (s.skill_name) in matching output
  */
 async function getEnhancedRecommendationsForUser(userId, skillRequirements, synonymMap = {}, limit = 10) {
   // Build WHERE conditions for each skill with flexible difficulty matching
-  // The key matching is through skill relationships: Course -TEACHES-> Skill <-NEEDS- User
+  // The key matching is through skill relationships: Course -ALIGNS_TO_SKILL-> Skill <-NEEDS- User
   // Domain matching is NOT required - if a course teaches the skill the user needs, it's relevant
   // regardless of the course's subject category
   const skillConditions = Object.entries(skillRequirements).map(([skillId, req]) => {
@@ -430,41 +419,30 @@ async function getEnhancedRecommendationsForUser(userId, skillRequirements, syno
 
   // Query prioritizes English skill names in output using COALESCE
   const query = `
-    MATCH (u:User {user_id: '${userId}'})-[n:NEEDS]->(s:Skill)<-[t:TEACHES]-(c:Course)
+    MATCH (u:User {user_id: '${userId}'})-[n:NEEDS]->(s:Skill)<-[t:ALIGNS_TO_SKILL]-(c:Course)
     WHERE ${skillConditions}
     WITH c, s, n, t, (n.gap_score * t.relevance_score) as match_score
     WITH c, 
-         collect(DISTINCT COALESCE(s.name_en, s.name_ar)) as matching_skills,
+         collect(DISTINCT s.skill_name) as matching_skills,
          SUM(match_score) as base_score,
          count(DISTINCT s) as skill_coverage,
          MAX(n.priority) as max_priority
     WITH c, matching_skills, skill_coverage, max_priority,
          base_score * (1.0 + (skill_coverage - 1) * 0.15) as recommendation_score
+    OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
     RETURN 
       c.course_id as course_id,
-      c.name_ar as name_ar,
-      c.name_en as name_en,
-      c.description_ar as description_ar,
-      c.description_en as description_en,
-      c.url as url,
-      c.provider as provider,
-      c.duration_hours as duration_hours,
-      c.difficulty_level as difficulty_level,
-      c.subject as subject,
-      c.price as price,
+      c.course_name as name_ar,
+      c.course_name_en as name_en,
+      c.course_description as description_ar,
+      c.course_description_en as description_en,
+      c.course_URL as url,
+      c.course_language as language,
       matching_skills,
       recommendation_score,
       skill_coverage,
       max_priority,
-      c.extracted_skills as extracted_skills,
-      c.learning_outcomes as learning_outcomes,
-      c.target_audience as target_audience,
-      c.career_paths as career_paths,
-      c.industry_tags as industry_tags,
-      c.quality_indicators as quality_indicators,
-      c.summary_ar as summary_ar,
-      c.summary_en as summary_en,
-      c.enriched_at as enriched_at
+      src.source_name as platform
     ORDER BY recommendation_score DESC, max_priority DESC, skill_coverage DESC
     LIMIT ${limit}
   `;
@@ -546,11 +524,8 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
   if (search) {
     const escaped = search.replace(/'/g, "\\'");
     conditions.push(`(
-      toLower(c.name_ar) CONTAINS toLower('${escaped}') OR
-      toLower(c.name_en) CONTAINS toLower('${escaped}') OR
-      toLower(c.description_ar) CONTAINS toLower('${escaped}') OR
-      toLower(c.description_en) CONTAINS toLower('${escaped}') OR
-      toLower(c.subject) CONTAINS toLower('${escaped}')
+      toLower(c.course_name) CONTAINS toLower('${escaped}') OR
+      toLower(c.course_name_en) CONTAINS toLower('${escaped}')
     )`);
   }
   
@@ -561,7 +536,7 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
   }
   
   if (language) {
-    conditions.push(`c.language = '${language}'`);
+    conditions.push(`c.course_language = '${language}'`);
   }
   
   if (subject) {
@@ -595,29 +570,24 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
     const escapedSkill = skill.replace(/'/g, "\\'");
     const escapedDomain = domain.replace(/'/g, "\\'");
     query = `
-      MATCH (c:Course)-[t:TEACHES]->(s:Skill)
+      MATCH (c:Course)-[t:ALIGNS_TO_SKILL]->(s:Skill)
       MATCH (c)-[:BELONGS_TO]->(d:Domain)
-      WHERE (toLower(s.name_ar) CONTAINS toLower('${escapedSkill}') OR toLower(s.name_en) CONTAINS toLower('${escapedSkill}'))
+      WHERE toLower(s.skill_name) CONTAINS toLower('${escapedSkill}')
       AND (toLower(d.name_ar) CONTAINS toLower('${escapedDomain}') OR toLower(d.name_en) CONTAINS toLower('${escapedDomain}'))
       ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
-      WITH c, collect(DISTINCT {name_ar: s.name_ar, name_en: s.name_en, relevance: t.relevance_score}) as skills
+      WITH c, collect(DISTINCT {name_ar: s.skill_name, name_en: s.skill_name, relevance: t.relevance_score}) as skills
+      OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
       RETURN 
         c.course_id as course_id,
-        c.name_ar as name_ar,
-        c.name_en as name_en,
-        c.description_ar as description_ar,
-        c.description_en as description_en,
-        c.url as url,
-        c.provider as provider,
-        c.duration_hours as duration_hours,
-        c.difficulty_level as difficulty_level,
-        c.language as language,
-        c.subject as subject,
-        c.subtitle as subtitle,
-        c.university as university,
-        c.price as price,
-        skills
-      ORDER BY c.name_ar
+        c.course_name as name_ar,
+        c.course_name_en as name_en,
+        c.course_description as description_ar,
+        c.course_description_en as description_en,
+        c.course_URL as url,
+        c.course_language as language,
+        skills,
+        src.source_name as platform
+      ORDER BY c.course_name
       SKIP ${skip}
       LIMIT ${limit}
     `;
@@ -625,27 +595,22 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
     // Only skill filter
     const escapedSkill = skill.replace(/'/g, "\\'");
     query = `
-      MATCH (c:Course)-[t:TEACHES]->(s:Skill)
-      WHERE (toLower(s.name_ar) CONTAINS toLower('${escapedSkill}') OR toLower(s.name_en) CONTAINS toLower('${escapedSkill}'))
+      MATCH (c:Course)-[t:ALIGNS_TO_SKILL]->(s:Skill)
+      WHERE toLower(s.skill_name) CONTAINS toLower('${escapedSkill}')
       ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
-      WITH c, collect(DISTINCT {name_ar: s.name_ar, name_en: s.name_en, relevance: t.relevance_score}) as skills
+      WITH c, collect(DISTINCT {name_ar: s.skill_name, name_en: s.skill_name, relevance: t.relevance_score}) as skills
+      OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
       RETURN 
         c.course_id as course_id,
-        c.name_ar as name_ar,
-        c.name_en as name_en,
-        c.description_ar as description_ar,
-        c.description_en as description_en,
-        c.url as url,
-        c.provider as provider,
-        c.duration_hours as duration_hours,
-        c.difficulty_level as difficulty_level,
-        c.language as language,
-        c.subject as subject,
-        c.subtitle as subtitle,
-        c.university as university,
-        c.price as price,
-        skills
-      ORDER BY c.name_ar
+        c.course_name as name_ar,
+        c.course_name_en as name_en,
+        c.course_description as description_ar,
+        c.course_description_en as description_en,
+        c.course_URL as url,
+        c.course_language as language,
+        skills,
+        src.source_name as platform
+      ORDER BY c.course_name
       SKIP ${skip}
       LIMIT ${limit}
     `;
@@ -656,41 +621,27 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
       MATCH (c:Course)-[:BELONGS_TO]->(d:Domain)
       WHERE (toLower(d.name_ar) CONTAINS toLower('${escapedDomain}') OR toLower(d.name_en) CONTAINS toLower('${escapedDomain}'))
       ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
-      OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
-      WITH c, collect(DISTINCT {name_ar: s.name_ar, name_en: s.name_en, relevance: t.relevance_score}) as skills
+      OPTIONAL MATCH (c)-[t:ALIGNS_TO_SKILL]->(s:Skill)
+      WITH c, collect(DISTINCT {name_ar: s.skill_name, name_en: s.skill_name, relevance: t.relevance_score}) as skills
+      OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
       RETURN 
         c.course_id as course_id,
-        c.name_ar as name_ar,
-        c.name_en as name_en,
-        c.description_ar as description_ar,
-        c.description_en as description_en,
-        c.url as url,
-        c.provider as provider,
-        c.duration_hours as duration_hours,
-        c.difficulty_level as difficulty_level,
-        c.language as language,
-        c.subject as subject,
-        c.subtitle as subtitle,
-        c.university as university,
-        c.price as price,
+        c.course_name as name_ar,
+        c.course_name_en as name_en,
+        c.course_description as description_ar,
+        c.course_description_en as description_en,
+        c.course_URL as url,
+        c.course_language as language,
         skills,
-        c.extracted_skills as extracted_skills,
-        c.learning_outcomes as learning_outcomes,
-        c.target_audience as target_audience,
-        c.career_paths as career_paths,
-        c.industry_tags as industry_tags,
-        c.summary_ar as summary_ar,
-        c.summary_en as summary_en,
-        c.quality_indicators as quality_indicators,
-        c.enriched_at as enriched_at
-      ORDER BY c.name_ar
+        src.source_name as platform
+      ORDER BY c.course_name
       SKIP ${skip}
       LIMIT ${limit}
     `;
   } else {
     // No skill or domain filter
     // Add condition to only show courses with actual titles (not empty placeholders)
-    const titleCondition = `((c.name_ar IS NOT NULL AND c.name_ar <> '') OR (c.name_en IS NOT NULL AND c.name_en <> ''))`;
+    const titleCondition = `((c.course_name IS NOT NULL AND c.course_name <> '') OR (c.course_name_en IS NOT NULL AND c.course_name_en <> ''))`;
     const fullWhereClause = whereClause 
       ? `${whereClause} AND ${titleCondition}`
       : `WHERE ${titleCondition}`;
@@ -698,34 +649,20 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
     query = `
       MATCH (c:Course)
       ${fullWhereClause}
-      OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
-      WITH c, collect(DISTINCT {name_ar: s.name_ar, name_en: s.name_en, relevance: t.relevance_score}) as skills
+      OPTIONAL MATCH (c)-[t:ALIGNS_TO_SKILL]->(s:Skill)
+      WITH c, collect(DISTINCT {name_ar: s.skill_name, name_en: s.skill_name, relevance: t.relevance_score}) as skills
+      OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
       RETURN 
         c.course_id as course_id,
-        c.name_ar as name_ar,
-        c.name_en as name_en,
-        c.description_ar as description_ar,
-        c.description_en as description_en,
-        c.url as url,
-        c.provider as provider,
-        c.duration_hours as duration_hours,
-        c.difficulty_level as difficulty_level,
-        c.language as language,
-        c.subject as subject,
-        c.subtitle as subtitle,
-        c.university as university,
-        c.price as price,
+        c.course_name as name_ar,
+        c.course_name_en as name_en,
+        c.course_description as description_ar,
+        c.course_description_en as description_en,
+        c.course_URL as url,
+        c.course_language as language,
         skills,
-        c.extracted_skills as extracted_skills,
-        c.learning_outcomes as learning_outcomes,
-        c.target_audience as target_audience,
-        c.career_paths as career_paths,
-        c.industry_tags as industry_tags,
-        c.summary_ar as summary_ar,
-        c.summary_en as summary_en,
-        c.quality_indicators as quality_indicators,
-        c.enriched_at as enriched_at
-      ORDER BY c.name_ar
+        src.source_name as platform
+      ORDER BY c.course_name
       SKIP ${skip}
       LIMIT ${limit}
     `;
@@ -743,17 +680,17 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
     const escapedSkill = skill.replace(/'/g, "\\'");
     const escapedDomain = domain.replace(/'/g, "\\'");
     countQuery = `
-      MATCH (c:Course)-[t:TEACHES]->(s:Skill)
+      MATCH (c:Course)-[t:ALIGNS_TO_SKILL]->(s:Skill)
       MATCH (c)-[:BELONGS_TO]->(d:Domain)
-      WHERE (toLower(s.name_ar) CONTAINS toLower('${escapedSkill}') OR toLower(s.name_en) CONTAINS toLower('${escapedSkill}'))
+      WHERE toLower(s.skill_name) CONTAINS toLower('${escapedSkill}')
       AND (toLower(d.name_ar) CONTAINS toLower('${escapedDomain}') OR toLower(d.name_en) CONTAINS toLower('${escapedDomain}'))
       ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
       RETURN count(DISTINCT c) as total
     `;
   } else if (skill) {
     countQuery = `
-      MATCH (c:Course)-[t:TEACHES]->(s:Skill)
-      WHERE (toLower(s.name_ar) CONTAINS toLower('${skill.replace(/'/g, "\\'")}') OR toLower(s.name_en) CONTAINS toLower('${skill.replace(/'/g, "\\'")}'))
+      MATCH (c:Course)-[t:ALIGNS_TO_SKILL]->(s:Skill)
+      WHERE toLower(s.skill_name) CONTAINS toLower('${skill.replace(/'/g, "\\'")}')
       ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
       RETURN count(DISTINCT c) as total
     `;
@@ -767,7 +704,7 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
     `;
   } else {
     // Add same title filter to count query
-    const titleCondition = `((c.name_ar IS NOT NULL AND c.name_ar <> '') OR (c.name_en IS NOT NULL AND c.name_en <> ''))`;
+    const titleCondition = `((c.course_name IS NOT NULL AND c.course_name <> '') OR (c.course_name_en IS NOT NULL AND c.course_name_en <> ''))`;
     const fullWhereClause = whereClause 
       ? `${whereClause} AND ${titleCondition}`
       : `WHERE ${titleCondition}`;
@@ -803,12 +740,12 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
 async function getCourseFilterOptions() {
   const queries = {
     levels: `MATCH (c:Course) WHERE c.difficulty_level IS NOT NULL RETURN DISTINCT c.difficulty_level as value ORDER BY value`,
-    languages: `MATCH (c:Course) WHERE c.language IS NOT NULL RETURN DISTINCT c.language as value ORDER BY value`,
+    languages: `MATCH (c:Course) WHERE c.course_language IS NOT NULL RETURN DISTINCT c.course_language as value ORDER BY value`,
     subjects: `MATCH (c:Course) WHERE c.subject IS NOT NULL AND c.subject <> '' RETURN DISTINCT c.subject as value ORDER BY value`,
-    providers: `MATCH (c:Course) WHERE c.provider IS NOT NULL AND c.provider <> '' RETURN DISTINCT c.provider as value ORDER BY value`,
+    platforms: `MATCH (c:Course)-[:DERIVED_FROM]->(s:Source) WHERE s.source_name IS NOT NULL AND s.source_name <> '' RETURN DISTINCT s.source_name as value ORDER BY value`,
     universities: `MATCH (c:Course) WHERE c.university IS NOT NULL AND c.university <> '' RETURN DISTINCT c.university as value ORDER BY value`,
     domains: `MATCH (c:Course)-[:BELONGS_TO]->(d:Domain) RETURN DISTINCT d.name_ar as name_ar, d.name_en as name_en ORDER BY d.name_ar`,
-    skills: `MATCH (c:Course)-[:TEACHES]->(s:Skill) RETURN DISTINCT s.name_ar as name_ar, s.name_en as name_en ORDER BY s.name_ar`
+    skills: `MATCH (c:Course)-[:ALIGNS_TO_SKILL]->(s:Skill) RETURN DISTINCT s.skill_name as name_ar, s.skill_name as name_en ORDER BY s.skill_name`
   };
   
   const results = {};
@@ -847,7 +784,7 @@ async function findPeersWithSimilarGaps(userId, limit = 5) {
     WHERE u1.user_id <> u2.user_id 
       AND u1.department_id = u2.department_id
     WITH u2, 
-         collect(DISTINCT s.name_ar) as common_gaps,
+         collect(DISTINCT s.skill_name) as common_gaps,
          count(DISTINCT s) as similarity_score,
          AVG(n1.gap_score) as avg_gap_score
     WHERE similarity_score >= 2
@@ -953,8 +890,8 @@ async function createExtractedSkillRelationships(courseId, skills) {
       // First check if skill exists
       const findQuery = `
         MATCH (s:Skill)
-        WHERE toLower(s.name_ar) = toLower('${skillName.replace(/'/g, "\\'")}')
-           OR toLower(s.name_en) = toLower('${skillName.replace(/'/g, "\\'")}')
+        WHERE toLower(s.skill_name) = toLower('${skillName.replace(/'/g, "\\'")}')
+           OR toLower(s.skill_name) = toLower('${skillName.replace(/'/g, "\\'")}')
         RETURN s.skill_id as skill_id
         LIMIT 1
       `;
@@ -968,7 +905,7 @@ async function createExtractedSkillRelationships(courseId, skills) {
         const relQuery = `
           MATCH (c:Course {course_id: '${courseId}'})
           MATCH (s:Skill {skill_id: '${skillId}'})
-          MERGE (c)-[t:TEACHES]->(s)
+          MERGE (c)-[t:ALIGNS_TO_SKILL]->(s)
           ON CREATE SET t.relevance_score = 0.8, t.source = 'ai_extracted'
           RETURN type(t) as rel_type
         `;
@@ -989,9 +926,9 @@ async function createExtractedSkillRelationships(courseId, skills) {
 /**
  * Get course recommendations based on user interests (skills/topics)
  * Searches courses that teach skills matching the user's interests
- * PRIORITIZES English field matching: c.name_en, c.subject, s.name_en
+ * PRIORITIZES English field matching: c.name_en, c.subject, s.skill_name
  * Falls back to Arabic fields for matching
- * @param {Array} interests - Array of interest strings in format "subjectId:skillName"
+ * @param {Array} interests - Array of interest strings in format "skillId:skillNameEn" or legacy "subjectId:skillName"
  * @param {number} limit - Maximum courses to return
  * @returns {Promise<Array>} Array of course recommendations
  */
@@ -1000,7 +937,7 @@ async function getRecommendationsByInterests(interests, limit = 10) {
     return [];
   }
 
-  // Extract skill names from interest keys (format: "subjectId:skillName")
+  // Extract skill names from interest keys (format: "skillId:skillNameEn" or "subjectId:skillName")
   const skillNames = interests.map(interest => {
     const parts = interest.split(':');
     return parts.length > 1 ? parts.slice(1).join(':') : interest;
@@ -1011,49 +948,37 @@ async function getRecommendationsByInterests(interests, limit = 10) {
   }
 
   // Build WHERE conditions for skill matching
-  // PRIORITIZE English fields: c.name_en, c.subject (usually English), s.name_en
+  // PRIORITIZE English fields: c.course_name_en, s.skill_name
   // Then fallback to Arabic fields
   const skillConditions = skillNames.map(skill => {
     const escaped = skill.replace(/'/g, "\\'");
     return `(
-      toLower(c.name_en) CONTAINS toLower('${escaped}') OR
-      toLower(c.subject) CONTAINS toLower('${escaped}') OR
-      toLower(s.name_en) CONTAINS toLower('${escaped}') OR
-      toLower(c.description_en) CONTAINS toLower('${escaped}') OR
-      toLower(c.name_ar) CONTAINS toLower('${escaped}') OR
-      toLower(c.description_ar) CONTAINS toLower('${escaped}') OR
-      toLower(s.name_ar) CONTAINS toLower('${escaped}')
+      toLower(c.course_name_en) CONTAINS toLower('${escaped}') OR
+      toLower(s.skill_name) CONTAINS toLower('${escaped}') OR
+      toLower(c.course_name) CONTAINS toLower('${escaped}') OR
+      toLower(s.skill_name) CONTAINS toLower('${escaped}')
     )`;
   }).join(' OR ');
 
   const query = `
     MATCH (c:Course)
-    OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
+    OPTIONAL MATCH (c)-[t:ALIGNS_TO_SKILL]->(s:Skill)
     WHERE ${skillConditions}
     WITH c, 
-         collect(DISTINCT COALESCE(s.name_en, s.name_ar)) as matching_skills,
+         collect(DISTINCT s.skill_name) as matching_skills,
          count(DISTINCT s) as skill_coverage
+    OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
     RETURN DISTINCT
       c.course_id as course_id,
-      c.name_ar as name_ar,
-      c.name_en as name_en,
-      c.description_ar as description_ar,
-      c.description_en as description_en,
-      c.url as url,
-      c.provider as provider,
-      c.duration_hours as duration_hours,
-      c.difficulty_level as difficulty_level,
-      c.subject as subject,
-      c.university as university,
-      c.price as price,
+      c.course_name as name_ar,
+      c.course_name_en as name_en,
+      c.course_description as description_ar,
+      c.course_description_en as description_en,
+      c.course_URL as url,
+      c.course_language as language,
       matching_skills,
       skill_coverage,
-      c.extracted_skills as extracted_skills,
-      c.learning_outcomes as learning_outcomes,
-      c.target_audience as target_audience,
-      c.career_paths as career_paths,
-      c.summary_ar as summary_ar,
-      c.summary_en as summary_en
+      src.source_name as platform
     ORDER BY skill_coverage DESC
     LIMIT ${limit}
   `;
@@ -1085,7 +1010,7 @@ async function getRecommendationsByDomains(domainIds, domainNames, limit = 10) {
   }
 
   // Build WHERE conditions for domain matching using domain names
-  // PRIORITIZE English domain names (name_en) for matching against course.subject
+  // PRIORITIZE English domain names (name_en) for matching against course_name_en
   let domainConditions = 'false'; // Default to false if no conditions
   
   if (domainNames && domainNames.length > 0) {
@@ -1099,15 +1024,12 @@ async function getRecommendationsByDomains(domainIds, domainNames, limit = 10) {
       
       if (escapedEn) {
         // English domain name matches against English course fields (primary)
-        parts.push(`toLower(c.subject) CONTAINS toLower('${escapedEn}')`);
-        parts.push(`toLower(c.name_en) CONTAINS toLower('${escapedEn}')`);
-        parts.push(`toLower(c.description_en) CONTAINS toLower('${escapedEn}')`);
+        parts.push(`toLower(c.course_name_en) CONTAINS toLower('${escapedEn}')`);
       }
       
       if (escapedAr) {
         // Arabic domain name matches against Arabic course fields (fallback)
-        parts.push(`toLower(c.name_ar) CONTAINS toLower('${escapedAr}')`);
-        parts.push(`toLower(c.description_ar) CONTAINS toLower('${escapedAr}')`);
+        parts.push(`toLower(c.course_name) CONTAINS toLower('${escapedAr}')`);
       }
       
       return parts.length > 0 ? `(${parts.join(' OR ')})` : null;
@@ -1121,31 +1043,22 @@ async function getRecommendationsByDomains(domainIds, domainNames, limit = 10) {
   const query = `
     MATCH (c:Course)
     WHERE ${domainConditions}
-    OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
+    OPTIONAL MATCH (c)-[t:ALIGNS_TO_SKILL]->(s:Skill)
     WITH c, 
-         collect(DISTINCT COALESCE(s.name_en, s.name_ar)) as related_skills,
+         collect(DISTINCT s.skill_name) as related_skills,
          count(DISTINCT s) as skill_coverage
+    OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
     RETURN DISTINCT
       c.course_id as course_id,
-      c.name_ar as name_ar,
-      c.name_en as name_en,
-      c.description_ar as description_ar,
-      c.description_en as description_en,
-      c.url as url,
-      c.provider as provider,
-      c.duration_hours as duration_hours,
-      c.difficulty_level as difficulty_level,
-      c.subject as subject,
-      c.university as university,
-      c.price as price,
+      c.course_name as name_ar,
+      c.course_name_en as name_en,
+      c.course_description as description_ar,
+      c.course_description_en as description_en,
+      c.course_URL as url,
+      c.course_language as language,
       related_skills as matching_skills,
       skill_coverage,
-      c.extracted_skills as extracted_skills,
-      c.learning_outcomes as learning_outcomes,
-      c.target_audience as target_audience,
-      c.career_paths as career_paths,
-      c.summary_ar as summary_ar,
-      c.summary_en as summary_en
+      src.source_name as platform
     ORDER BY skill_coverage DESC
     LIMIT ${limit}
   `;
@@ -1169,23 +1082,32 @@ async function getRecommendationsByDomains(domainIds, domainNames, limit = 10) {
  * @returns {Promise<Object>} Update result
  */
 async function updateCourseMetadata(courseId, updates) {
+  // Map frontend field names to Neo4j property names
+  const fieldMapping = {
+    'name_ar': 'course_name',
+    'name_en': 'course_name_en',
+    'url': 'course_URL',
+    'language': 'course_language'
+  };
+  
   const allowedFields = [
-    'subject', 'difficulty_level', 'name_ar', 'name_en',
-    'description_ar', 'description_en', 'provider', 'university',
-    'duration_hours', 'language', 'url'
+    'name_ar', 'name_en', 'url', 'language'
   ];
   
   const setClauses = [];
   for (const [key, value] of Object.entries(updates)) {
     if (allowedFields.includes(key) && value !== undefined) {
+      // Map field name to Neo4j property name
+      const neo4jField = fieldMapping[key] || key;
+      
       if (typeof value === 'number') {
-        setClauses.push(`c.${key} = ${value}`);
+        setClauses.push(`c.${neo4jField} = ${value}`);
       } else if (value === null) {
-        setClauses.push(`c.${key} = null`);
+        setClauses.push(`c.${neo4jField} = null`);
       } else {
         // Escape backslashes first, then single quotes (order matters!)
         const escaped = String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-        setClauses.push(`c.${key} = '${escaped}'`);
+        setClauses.push(`c.${neo4jField} = '${escaped}'`);
       }
     }
   }
@@ -1200,7 +1122,7 @@ async function updateCourseMetadata(courseId, updates) {
   const query = `
     MATCH (c:Course {course_id: '${courseId}'})
     SET ${setClauses.join(', ')}, c.updated_at = '${updatedAt}'
-    RETURN c.course_id as course_id, c.name_ar as name_ar, c.subject as subject
+    RETURN c.course_id as course_id, c.course_name as name_ar, c.course_name_en as name_en
   `;
   
   console.log(`📝 Updating Neo4j course metadata: ${courseId}`);
@@ -1225,8 +1147,8 @@ async function updateCourseMetadata(courseId, updates) {
 async function removeCourseSkillRelationship(courseId, skillName) {
   const escaped = skillName.replace(/'/g, "\\'");
   const query = `
-    MATCH (c:Course {course_id: '${courseId}'})-[t:TEACHES]->(s:Skill)
-    WHERE toLower(s.name_ar) = toLower('${escaped}') OR toLower(s.name_en) = toLower('${escaped}')
+    MATCH (c:Course {course_id: '${courseId}'})-[t:ALIGNS_TO_SKILL]->(s:Skill)
+    WHERE toLower(s.skill_name) = toLower('${escaped}')
     DELETE t
     RETURN count(t) as deleted_count
   `;
@@ -1249,8 +1171,8 @@ async function addCourseSkillByName(courseId, skillName, relevanceScore = 0.8) {
   // First find the skill
   const findQuery = `
     MATCH (s:Skill)
-    WHERE toLower(s.name_ar) = toLower('${escaped}') OR toLower(s.name_en) = toLower('${escaped}')
-    RETURN s.skill_id as skill_id, s.name_ar as name_ar
+    WHERE toLower(s.skill_name) = toLower('${escaped}')
+    RETURN s.skill_id as skill_id, s.skill_name as name_ar
     LIMIT 1
   `;
   
@@ -1270,10 +1192,10 @@ async function addCourseSkillByName(courseId, skillName, relevanceScore = 0.8) {
   const createQuery = `
     MATCH (c:Course {course_id: '${courseId}'})
     MATCH (s:Skill {skill_id: '${skillId}'})
-    MERGE (c)-[t:TEACHES]->(s)
+    MERGE (c)-[t:ALIGNS_TO_SKILL]->(s)
     ON CREATE SET t.relevance_score = ${relevanceScore}, t.source = 'admin_added'
     ON MATCH SET t.relevance_score = ${relevanceScore}
-    RETURN type(t) as rel_type, s.name_ar as skill_name
+    RETURN type(t) as rel_type, s.skill_name as skill_name
   `;
   
   console.log(`➕ Adding skill relationship: ${courseId} -> ${skillName}`);
@@ -1304,23 +1226,19 @@ async function deleteCourseComplete(courseId) {
 async function getCourseById(courseId) {
   const query = `
     MATCH (c:Course {course_id: '${courseId}'})
-    OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
-    WITH c, collect(DISTINCT {name_ar: s.name_ar, name_en: s.name_en, relevance: t.relevance_score}) as skills
+    OPTIONAL MATCH (c)-[t:ALIGNS_TO_SKILL]->(s:Skill)
+    WITH c, collect(DISTINCT {name_ar: s.skill_name, name_en: s.skill_name, relevance: t.relevance_score}) as skills
+    OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
     RETURN 
       c.course_id as course_id,
-      c.name_ar as name_ar,
-      c.name_en as name_en,
-      c.description_ar as description_ar,
-      c.description_en as description_en,
-      c.url as url,
-      c.provider as provider,
-      c.duration_hours as duration_hours,
-      c.difficulty_level as difficulty_level,
-      c.language as language,
-      c.subject as subject,
-      c.subtitle as subtitle,
-      c.university as university,
-      skills
+      c.course_name as name_ar,
+      c.course_name_en as name_en,
+      c.course_description as description_ar,
+      c.course_description_en as description_en,
+      c.course_URL as url,
+      c.course_language as language,
+      skills,
+      src.source_name as platform
   `;
   
   const result = await makeRequest('POST', '/query', { data: { query } });
@@ -1339,8 +1257,8 @@ async function getCourseById(courseId) {
 async function getAllSkills() {
   const query = `
     MATCH (s:Skill)
-    RETURN s.skill_id as skill_id, s.name_ar as name_ar, s.name_en as name_en
-    ORDER BY s.name_ar
+    RETURN s.skill_id as skill_id, s.skill_name as name_ar, s.skill_name as name_en
+    ORDER BY s.skill_name
   `;
   
   const result = await makeRequest('POST', '/query', { data: { query } });

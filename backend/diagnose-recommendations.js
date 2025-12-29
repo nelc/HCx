@@ -79,7 +79,7 @@ async function diagnose() {
     for (const skillId of skillIds) {
       try {
         const query = `
-          MATCH (c:Course)-[t:TEACHES]->(s:Skill {skill_id: '${skillId}'})
+          MATCH (c:Course)-[t:ALIGNS_TO_SKILL]->(s:Skill {skill_id: '${skillId}'})
           RETURN c.course_id as course_id, c.name_ar as name_ar, c.difficulty_level as difficulty
           LIMIT 5
         `;
@@ -97,15 +97,15 @@ async function diagnose() {
       }
     }
 
-    // 5. Check all TEACHES relationships
-    console.log('\n=== Total TEACHES Relationships ===');
+    // 5. Check all ALIGNS_TO_SKILL relationships
+    console.log('\n=== Total ALIGNS_TO_SKILL Relationships ===');
     try {
       const query = `
-        MATCH (c:Course)-[t:TEACHES]->(s:Skill)
+        MATCH (c:Course)-[t:ALIGNS_TO_SKILL]->(s:Skill)
         RETURN count(t) as total, count(DISTINCT c) as courses, count(DISTINCT s) as skills
       `;
       const result = await neo4jApi.makeRequest('POST', '/query', { data: { query } });
-      console.log('   Total TEACHES relationships:', result?.total || result?.[0]?.total || 0);
+      console.log('   Total ALIGNS_TO_SKILL relationships:', result?.total || result?.[0]?.total || 0);
       console.log('   Unique courses:', result?.courses || result?.[0]?.courses || 0);
       console.log('   Unique skills:', result?.skills || result?.[0]?.skills || 0);
     } catch (e) {
@@ -118,7 +118,7 @@ async function diagnose() {
       const query = `
         MATCH (c:Course)
         WHERE toLower(c.name_en) CONTAINS 'decision' OR toLower(c.name_ar) CONTAINS 'قرار'
-        OPTIONAL MATCH (c)-[t:TEACHES]->(s:Skill)
+        OPTIONAL MATCH (c)-[t:ALIGNS_TO_SKILL]->(s:Skill)
         RETURN c.course_id as course_id, c.name_ar as name_ar, c.name_en as name_en, 
                c.difficulty_level as difficulty,
                collect({skill_id: s.skill_id, name_ar: s.name_ar}) as skills
@@ -130,7 +130,7 @@ async function diagnose() {
           console.log(`   📚 Course: ${course.name_ar || course.name_en}`);
           console.log(`      ID: ${course.course_id}`);
           console.log(`      Difficulty: ${course.difficulty}`);
-          console.log(`      TEACHES skills:`);
+          console.log(`      ALIGNS_TO_SKILL skills:`);
           if (course.skills && course.skills.length > 0) {
             for (const skill of course.skills) {
               if (skill.skill_id) {
@@ -138,7 +138,7 @@ async function diagnose() {
               }
             }
           } else {
-            console.log(`         ❌ No TEACHES relationships found!`);
+            console.log(`         ❌ No ALIGNS_TO_SKILL relationships found!`);
           }
         }
       } else {

@@ -715,6 +715,17 @@ CREATE TABLE user_hidden_recommendations (
 );
 
 -- ============================================
+-- VISIBLE COURSES (whitelist for employee visibility)
+-- ============================================
+
+CREATE TABLE visible_courses (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    course_id VARCHAR(255) NOT NULL UNIQUE,
+    made_visible_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    visible_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================
 -- AUDIT LOG
 -- ============================================
 
@@ -794,6 +805,9 @@ CREATE INDEX idx_courses_university ON courses(university);
 -- Course skills indexes
 CREATE INDEX idx_course_skills_course ON course_skills(course_id);
 CREATE INDEX idx_course_skills_skill ON course_skills(skill_id);
+
+-- Visible courses indexes
+CREATE INDEX idx_visible_courses_course_id ON visible_courses(course_id);
 
 -- Contents indexes
 CREATE INDEX idx_contents_external_id ON contents(external_content_id);

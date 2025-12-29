@@ -42,6 +42,7 @@ export default function Courses() {
     skill_id: '',
     university: '',
     subject: '',
+    visibility: '', // '' = all, 'visible' = visible only, 'hidden' = hidden only
   });
   
   // Admin edit/delete/add modal states
@@ -96,7 +97,8 @@ export default function Courses() {
           .map(c => ({
             ...c,
             source: 'local',
-            is_local: true
+            is_local: true,
+            is_visible: c.is_visible !== undefined ? c.is_visible : true // Default to visible for local courses
           }));
         allCourses = [...localCourses];
         totalCount += localCourses.length;
@@ -112,14 +114,29 @@ export default function Courses() {
         totalCount += neo4jResponse.value.data.pagination?.total || 0;
       }
 
-      // Sort to ensure local courses are always on top
+      // Sort: 1) Visible courses first, 2) Local courses on top within each group
       allCourses.sort((a, b) => {
-        if ((a.source === 'local' || a.is_local) && !(b.source === 'local' || b.is_local)) return -1;
-        if (!(a.source === 'local' || a.is_local) && (b.source === 'local' || b.is_local)) return 1;
-        return 0;
+        // First priority: visibility (visible courses first)
+        // Explicitly check for true to handle undefined/null properly
+        const aVisible = a.is_visible === true ? 1 : 0;
+        const bVisible = b.is_visible === true ? 1 : 0;
+        if (aVisible !== bVisible) return bVisible - aVisible;
+        
+        // Second priority: local courses on top within each visibility group
+        const aLocal = (a.source === 'local' || a.is_local) ? 1 : 0;
+        const bLocal = (b.source === 'local' || b.is_local) ? 1 : 0;
+        return bLocal - aLocal;
       });
 
-      setCourses(allCourses);
+      // Apply visibility filter (client-side)
+      let filteredCourses = allCourses;
+      if (filters.visibility === 'visible') {
+        filteredCourses = allCourses.filter(c => c.is_visible === true);
+      } else if (filters.visibility === 'hidden') {
+        filteredCourses = allCourses.filter(c => c.is_visible !== true);
+      }
+
+      setCourses(filteredCourses);
       setPagination(prev => ({
         ...prev,
         total: totalCount,
@@ -583,6 +600,24 @@ export default function Courses() {
                   )}
                 </select>
               </div>
+
+              {/* Visibility Filter - Admin Only */}
+              {isAdmin && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    حالة الظهور
+                  </label>
+                  <select
+                    value={filters.visibility}
+                    onChange={(e) => setFilters({ ...filters, visibility: e.target.value })}
+                    className="input w-full"
+                  >
+                    <option value="">الكل</option>
+                    <option value="visible">ظاهرة فقط</option>
+                    <option value="hidden">مخفية فقط</option>
+                  </select>
+                </div>
+              )}
             </div>
 
             {/* Clear Filters Button */}
@@ -595,6 +630,7 @@ export default function Courses() {
                   skill_id: '',
                   university: '',
                   subject: '',
+                  visibility: '',
                 })}
                 className="text-sm text-slate-600 hover:text-primary-600 transition-colors"
               >
@@ -772,6 +808,29 @@ export default function Courses() {
                         {course.name_en}
                       </p>
                     )}
+
+                    {/* Course metadata row */}
+                    <div className="flex flex-wrap items-center gap-3 mb-3 text-sm text-slate-500">
+                      {/* Course ID */}
+                      {course.id && (
+                        <span className="flex items-center gap-1 bg-slate-100 px-2 py-1 rounded text-xs font-mono">
+                          <span className="text-slate-400">ID:</span>
+                          <span className="text-slate-600">{String(course.id).substring(0, 12)}{String(course.id).length > 12 ? '...' : ''}</span>
+                        </span>
+                      )}
+                      {/* Course URL */}
+                      {course.url && (
+                        <a
+                          href={course.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 text-primary-600 hover:text-primary-700 bg-primary-50 px-2 py-1 rounded text-xs"
+                        >
+                          <LinkIcon className="w-3 h-3" />
+                          <span>فتح الدورة</span>
+                        </a>
+                      )}
+                    </div>
                     
                     {(course.description_ar || course.description_en) && (
                       <div className="mb-3">
@@ -813,25 +872,14 @@ export default function Courses() {
                           <span>{course.university}</span>
                         </div>
                       )}
-                      {course.provider && (
-                        <span>• {course.provider}</span>
+                      {course.platform && (
+                        <span>• {course.platform}</span>
                       )}
                       {course.duration_hours && (
                         <div className="flex items-center gap-1">
                           <ClockIcon className="w-4 h-4" />
                           <span>{course.duration_hours} ساعة</span>
                         </div>
-                      )}
-                      {course.url && (
-                        <a
-                          href={course.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-1 text-primary-600 hover:text-primary-700"
-                        >
-                          <LinkIcon className="w-4 h-4" />
-                          <span>رابط الدورة</span>
-                        </a>
                       )}
                     </div>
 
