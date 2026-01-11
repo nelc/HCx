@@ -7,10 +7,19 @@ const { generateEnhancedRecommendations, storeRecommendationsWithReasons } = req
 
 const router = express.Router();
 
-// Initialize OpenAI
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+// Lazy initialize OpenAI (only when needed)
+let openai = null;
+function getOpenAI() {
+  if (!openai) {
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error('OpenAI API key not configured');
+    }
+    openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY
+    });
+  }
+  return openai;
+}
 
 // Reusable function to analyze assignment responses
 async function analyzeAssignment(assignmentId) {
@@ -284,7 +293,7 @@ Format response as JSON with this structure:
   "recommendations_en": "English recommendations"
 }`;
 
-        const completion = await openai.chat.completions.create({
+        const completion = await getOpenAI().chat.completions.create({
           model: 'gpt-4o-mini',
           messages: [{ role: 'user', content: prompt }],
           response_format: { type: 'json_object' }

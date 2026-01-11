@@ -7,6 +7,7 @@ const db = require('../db');
 const { authenticate } = require('../middleware/auth');
 const nelcApi = require('../services/nelcApi');
 const { sendPasswordResetEmail } = require('../services/emailService');
+const ldapService = require('../services/ldapService');
 
 const router = express.Router();
 
@@ -135,6 +136,188 @@ router.post('/login', [
     // #endregion
     console.error('Login error:', error);
     res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// LDAP Login
+router.post('/ldap-login', [
+  body('username').notEmpty().withMessage('اسم المستخدم مطلوب'),
+  body('password').notEmpty().withMessage('كلمة المرور مطلوبة')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+    
+    const { username, password } = req.body;
+    
+    console.log('LDAP login attempt for:', username);
+    
+    // Authenticate against LDAP
+    let ldapUser;
+    try {
+      ldapUser = await ldapService.authenticateUser(username, password);
+      console.log('LDAP authentication successful for:', username);
+    } catch (ldapError) {
+      console.error('LDAP authentication failed:', ldapError.message);
+      return res.status(401).json({ error: ldapError.message || 'فشل تسجيل الدخول عبر LDAP' });
+    }
+    
+    // Check if user exists in our database by ldap_username or email (any auth_provider)
+    let result = await db.query(`
+      SELECT u.*, d.name_ar as department_name_ar, d.name_en as department_name_en,
+             u.profile_completed
+      FROM users u
+      LEFT JOIN departments d ON u.department_id = d.id
+      WHERE u.ldap_username = $1 OR u.email = $2
+    `, [username, ldapUser.email]);
+    
+    let user;
+    
+    if (result.rows.length === 0) {
+      // Create new user from LDAP data
+      console.log('Creating new user from LDAP data:', ldapUser);
+      
+      // Generate a placeholder email if LDAP doesn't provide one
+      const userEmail = ldapUser.email || `${username}@elc.local`;
+      
+      // Parse display name for Arabic/English names
+      const displayName = ldapUser.displayName || ldapUser.cn || username;
+      
+      const insertResult = await db.query(`
+        INSERT INTO users (
+          email, 
+          name_ar, 
+          name_en, 
+          role, 
+          auth_provider, 
+          ldap_username,
+          job_title_ar,
+          job_title_en,
+          employee_number,
+          is_active
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING *
+      `, [
+        userEmail,
+        displayName,
+        displayName,
+        'employee', // Default role for new LDAP users
+        'ldap',
+        username,
+        ldapUser.title || null,
+        ldapUser.title || null,
+        ldapUser.employeeId || null,
+        true
+      ]);
+      
+      user = insertResult.rows[0];
+      
+      // Fetch with department info
+      result = await db.query(`
+        SELECT u.*, d.name_ar as department_name_ar, d.name_en as department_name_en,
+               u.profile_completed
+        FROM users u
+        LEFT JOIN departments d ON u.department_id = d.id
+        WHERE u.id = $1
+      `, [user.id]);
+      
+      user = result.rows[0];
+    } else {
+      user = result.rows[0];
+      
+      // If user exists but doesn't have ldap_username linked, link it now
+      if (!user.ldap_username) {
+        console.log('Linking existing user to LDAP account:', user.email);
+        await db.query(`
+          UPDATE users 
+          SET ldap_username = $1, auth_provider = 'ldap'
+          WHERE id = $2
+        `, [username, user.id]);
+        user.ldap_username = username;
+        user.auth_provider = 'ldap';
+      }
+    }
+    
+    // Update last login and sync LDAP data
+    await db.query(`
+      UPDATE users SET 
+        last_login = NOW(),
+        job_title_ar = COALESCE($2, job_title_ar),
+        job_title_en = COALESCE($3, job_title_en)
+      WHERE id = $1
+    `, [user.id, ldapUser.title, ldapUser.title]);
+    
+    if (!user.is_active) {
+      return res.status(403).json({ error: 'الحساب معطل' });
+    }
+    
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user.id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    
+    // Get name from NELC if user has national_id, fallback to database
+    const names = await getUserNameWithNelc(user);
+    
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name_ar: names.name_ar,
+        name_en: names.name_en,
+        role: user.role,
+        department_id: user.department_id,
+        department_name_ar: user.department_name_ar,
+        department_name_en: user.department_name_en,
+        job_title_ar: user.job_title_ar,
+        job_title_en: user.job_title_en,
+        employee_number: user.employee_number,
+        national_id: user.national_id,
+        avatar_url: user.avatar_url,
+        profile_completed: user.profile_completed || false,
+        auth_provider: user.auth_provider
+      }
+    });
+  } catch (error) {
+    console.error('LDAP Login error:', error);
+    res.status(500).json({ error: 'فشل تسجيل الدخول' });
+  }
+});
+
+// Get LDAP configuration (for debugging/info)
+router.get('/ldap-config', authenticate, async (req, res) => {
+  // Only admins can see LDAP config
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+  
+  try {
+    const config = ldapService.getConfig();
+    res.json(config);
+  } catch (error) {
+    console.error('Get LDAP config error:', error);
+    res.status(500).json({ error: 'Failed to get LDAP configuration' });
+  }
+});
+
+// Test LDAP connection (admin only)
+router.get('/ldap-test', authenticate, async (req, res) => {
+  // Only admins can test LDAP connection
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+  
+  try {
+    await ldapService.testConnection();
+    res.json({ success: true, message: 'LDAP connection successful' });
+  } catch (error) {
+    console.error('LDAP test error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
