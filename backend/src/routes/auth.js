@@ -385,6 +385,37 @@ router.post('/change-password', authenticate, [
   }
 });
 
+// Set password for LDAP/SSO users (no old password required)
+router.post('/set-password', authenticate, [
+  body('newPassword').isLength({ min: 6 }).withMessage('كلمة المرور يجب أن تكون 6 أحرف على الأقل')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+    
+    const { newPassword } = req.body;
+    
+    // Check if user is LDAP/SSO user
+    const userResult = await db.query('SELECT auth_provider, password_hash FROM users WHERE id = $1', [req.user.id]);
+    const user = userResult.rows[0];
+    
+    // Only allow setting password for LDAP/SSO users who don't have a password yet
+    if (user.auth_provider === 'local' && user.password_hash) {
+      return res.status(400).json({ error: 'استخدم خيار تغيير كلمة المرور بدلاً من ذلك' });
+    }
+    
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.user.id]);
+    
+    res.json({ message: 'تم تعيين كلمة المرور بنجاح' });
+  } catch (error) {
+    console.error('Set password error:', error);
+    res.status(500).json({ error: 'فشل في تعيين كلمة المرور' });
+  }
+});
+
 // Forgot password - send reset link
 router.post('/forgot-password', [
   body('email').isEmail().normalizeEmail()
