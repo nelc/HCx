@@ -29,7 +29,7 @@ steps:
       - 'DB_USER=hcx-db-user:latest,DB_PASS=hcx-db-pass:latest,DB_NAME=hcx-db-name:latest,JWT_SECRET=hcx-jwt-secret:latest,OPENAI_API_KEY=hcx-openai-key:latest'
 
 substitutions:
-  _REGION: 'me-central1'
+  _REGION: 'me-central2'
   # Format: PROJECT_ID:REGION:INSTANCE_NAME (e.g., my-project:us-central1:hcx-db)
   _INSTANCE_CONNECTION_NAME: '${PROJECT_ID}:me-central2:hcx-db'
 
