@@ -24,7 +24,7 @@ steps:
       - '--add-cloudsql-instances'
       - '${_INSTANCE_CONNECTION_NAME}'
       - '--set-env-vars'
-      - 'NODE_ENV=staging,INSTANCE_CONNECTION_NAME=${_INSTANCE_CONNECTION_NAME}'
+      - 'NODE_ENV=production,INSTANCE_CONNECTION_NAME=${_INSTANCE_CONNECTION_NAME}'
       - '--set-secrets'
       - 'DB_USER=hcx-db-user:latest,DB_PASS=hcx-db-pass:latest,DB_NAME=hcx-db-name:latest,JWT_SECRET=hcx-jwt-secret:latest,OPENAI_API_KEY=hcx-openai-key:latest'
 
