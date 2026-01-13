@@ -1,11 +1,11 @@
 steps:
   # Build the container image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/hrx-training:$COMMIT_SHA', '.']
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/hcx-staging:$COMMIT_SHA', '.']
   
   # Push the container image to Container Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/hrx-training:$COMMIT_SHA']
+    args: ['push', 'gcr.io/$PROJECT_ID/hcx-staging:$COMMIT_SHA']
   
   # Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -13,9 +13,9 @@ steps:
     args:
       - 'run'
       - 'deploy'
-      - 'hrx-training'
+      - 'hcx-staging'
       - '--image'
-      - 'gcr.io/$PROJECT_ID/hrx-training:$COMMIT_SHA'
+      - 'gcr.io/$PROJECT_ID/hcx-staging:$COMMIT_SHA'
       - '--region'
       - '${_REGION}'
       - '--platform'
@@ -24,17 +24,17 @@ steps:
       - '--add-cloudsql-instances'
       - '${_INSTANCE_CONNECTION_NAME}'
       - '--set-env-vars'
-      - 'NODE_ENV=production,INSTANCE_CONNECTION_NAME=${_INSTANCE_CONNECTION_NAME}'
+      - 'NODE_ENV=staging,INSTANCE_CONNECTION_NAME=${_INSTANCE_CONNECTION_NAME}'
       - '--set-secrets'
-      - 'DB_USER=hrx-db-user:latest,DB_PASS=hrx-db-pass:latest,DB_NAME=hrx-db-name:latest,JWT_SECRET=hrx-jwt-secret:latest,OPENAI_API_KEY=hrx-openai-key:latest'
+      - 'DB_USER=hcx-db-user:latest,DB_PASS=hcx-db-pass:latest,DB_NAME=hcx-db-name:latest,JWT_SECRET=hcx-jwt-secret:latest,OPENAI_API_KEY=hcx-openai-key:latest'
 
 substitutions:
   _REGION: 'me-central1'
-  # Format: PROJECT_ID:REGION:INSTANCE_NAME (e.g., my-project:us-central1:hrx-db)
-  _INSTANCE_CONNECTION_NAME: '${PROJECT_ID}:me-central1:hrx-db'
+  # Format: PROJECT_ID:REGION:INSTANCE_NAME (e.g., my-project:us-central1:hcx-db)
+  _INSTANCE_CONNECTION_NAME: '${PROJECT_ID}:me-central2:hcx-db'
 
 images:
-  - 'gcr.io/$PROJECT_ID/hrx-training:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/hcx-staging:$COMMIT_SHA'
 
 options:
   logging: CLOUD_LOGGING_ONLY
