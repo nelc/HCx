@@ -1,7 +1,9 @@
+const path = require('path');
+// Load .env from backend folder first, then from root folder
 require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
 
 // Import admin initialization
 const { initializeAdmin } = require('./db/initAdmin');
@@ -67,9 +69,9 @@ app.get('/api/health', (req, res) => {
 
 // Serve static files in production
 if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../../frontend/dist')));
+  app.use(express.static(path.join(__dirname, '../frontend/dist')));
   app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../../frontend/dist/index.html'));
+    res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
   });
 }
 
@@ -113,4 +115,3 @@ app.listen(PORT, async () => {
   // Initialize default admin user on startup
   await initializeAdmin();
 });
-
