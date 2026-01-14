@@ -1,0 +1,39 @@
+domain_ar,domain_en,description,skill_ar,skill_en,color_code
+إدارة المشاريع,Project Management,إدارة وتخطيط وتنفيذ المشاريع التقنية والإدارية,تخطيط المشاريع,Project Planning,#502390
+إدارة المشاريع,Project Management,إدارة وتخطيط وتنفيذ المشاريع التقنية والإدارية,إدارة المخاطر,Risk Management,#502390
+إدارة المشاريع,Project Management,إدارة وتخطيط وتنفيذ المشاريع التقنية والإدارية,قيادة الفريق,Team Leadership,#502390
+إدارة المشاريع,Project Management,إدارة وتخطيط وتنفيذ المشاريع التقنية والإدارية,إدارة الموارد,Resource Management,#502390
+البرمجة وتطوير البرمجيات,Programming & Software Development,تطوير التطبيقات والأنظمة البرمجية,JavaScript,JavaScript,#3B82F6
+البرمجة وتطوير البرمجيات,Programming & Software Development,تطوير التطبيقات والأنظمة البرمجية,Python,Python,#3B82F6
+البرمجة وتطوير البرمجيات,Programming & Software Development,تطوير التطبيقات والأنظمة البرمجية,Java,Java,#3B82F6
+البرمجة وتطوير البرمجيات,Programming & Software Development,تطوير التطبيقات والأنظمة البرمجية,تطوير الواجهات,Frontend Development,#3B82F6
+البرمجة وتطوير البرمجيات,Programming & Software Development,تطوير التطبيقات والأنظمة البرمجية,تطوير الخوادم,Backend Development,#3B82F6
+تحليل البيانات,Data Analysis,تحليل ومعالجة البيانات واستخلاص الرؤى,تحليل البيانات,Data Analysis,#10B981
+تحليل البيانات,Data Analysis,تحليل ومعالجة البيانات واستخلاص الرؤى,التصور البياني,Data Visualization,#10B981
+تحليل البيانات,Data Analysis,تحليل ومعالجة البيانات واستخلاص الرؤى,SQL,SQL,#10B981
+تحليل البيانات,Data Analysis,تحليل ومعالجة البيانات واستخلاص الرؤى,Excel المتقدم,Advanced Excel,#10B981
+تحليل البيانات,Data Analysis,تحليل ومعالجة البيانات واستخلاص الرؤى,الإحصاء التطبيقي,Applied Statistics,#10B981
+الذكاء الاصطناعي والتعلم الآلي,AI & Machine Learning,الذكاء الاصطناعي والتعلم الآلي وتطبيقاته,التعلم الآلي,Machine Learning,#8B5CF6
+الذكاء الاصطناعي والتعلم الآلي,AI & Machine Learning,الذكاء الاصطناعي والتعلم الآلي وتطبيقاته,التعلم العميق,Deep Learning,#8B5CF6
+الذكاء الاصطناعي والتعلم الآلي,AI & Machine Learning,الذكاء الاصطناعي والتعلم الآلي وتطبيقاته,معالجة اللغات الطبيعية,Natural Language Processing,#8B5CF6
+الذكاء الاصطناعي والتعلم الآلي,AI & Machine Learning,الذكاء الاصطناعي والتعلم الآلي وتطبيقاته,رؤية الحاسوب,Computer Vision,#8B5CF6
+الأمن السيبراني,Cybersecurity,أمن المعلومات والحماية من التهديدات السيبرانية,أمن الشبكات,Network Security,#F59E0B
+الأمن السيبراني,Cybersecurity,أمن المعلومات والحماية من التهديدات السيبرانية,اختبار الاختراق,Penetration Testing,#F59E0B
+الأمن السيبراني,Cybersecurity,أمن المعلومات والحماية من التهديدات السيبرانية,التشفير,Cryptography,#F59E0B
+الأمن السيبراني,Cybersecurity,أمن المعلومات والحماية من التهديدات السيبرانية,الاستجابة للحوادث,Incident Response,#F59E0B
+التصميم والإبداع,Design & Creativity,التصميم الجرافيكي وتصميم تجربة المستخدم,تصميم واجهة المستخدم,UI Design,#EC4899
+التصميم والإبداع,Design & Creativity,التصميم الجرافيكي وتصميم تجربة المستخدم,تصميم تجربة المستخدم,UX Design,#EC4899
+التصميم والإبداع,Design & Creativity,التصميم الجرافيكي وتصميم تجربة المستخدم,التصميم الجرافيكي,Graphic Design,#EC4899
+التصميم والإبداع,Design & Creativity,التصميم الجرافيكي وتصميم تجربة المستخدم,Figma,Figma,#EC4899
+التصميم والإبداع,Design & Creativity,التصميم الجرافيكي وتصميم تجربة المستخدم,Adobe XD,Adobe XD,#EC4899
+التسويق الرقمي,Digital Marketing,التسويق عبر الإنترنت ووسائل التواصل الاجتماعي,تسويق المحتوى,Content Marketing,#EF4444
+التسويق الرقمي,Digital Marketing,التسويق عبر الإنترنت ووسائل التواصل الاجتماعي,تحسين محركات البحث,SEO,#EF4444
+التسويق الرقمي,Digital Marketing,التسويق عبر الإنترنت ووسائل التواصل الاجتماعي,التسويق عبر وسائل التواصل,Social Media Marketing,#EF4444
+التسويق الرقمي,Digital Marketing,التسويق عبر الإنترنت ووسائل التواصل الاجتماعي,التسويق بالبريد الإلكتروني,Email Marketing,#EF4444
+التسويق الرقمي,Digital Marketing,التسويق عبر الإنترنت ووسائل التواصل الاجتماعي,إعلانات جوجل,Google Ads,#EF4444
+الحوسبة السحابية,Cloud Computing,البنية التحتية السحابية وخدمات الحوسبة السحابية,AWS,AWS,#14B8A6
+الحوسبة السحابية,Cloud Computing,البنية التحتية السحابية وخدمات الحوسبة السحابية,Azure,Azure,#14B8A6
+الحوسبة السحابية,Cloud Computing,البنية التحتية السحابية وخدمات الحوسبة السحابية,Google Cloud,Google Cloud,#14B8A6
+الحوسبة السحابية,Cloud Computing,البنية التحتية السحابية وخدمات الحوسبة السحابية,DevOps,DevOps,#14B8A6
+الحوسبة السحابية,Cloud Computing,البنية التحتية السحابية وخدمات الحوسبة السحابية,Docker,Docker,#14B8A6
+

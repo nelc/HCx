@@ -1,0 +1,61 @@
+PORT=3001
+
+# Cloud SQL Configuration (for Google Cloud Run deployment)
+INSTANCE_CONNECTION_NAME=app-sandbox-factory:me-central2:app-factory-db
+DB_USER=Hrxuser
+DB_PASS=lkdfvsdSDD565?
+DB_NAME=hrx
+
+# Frontend URL (for CORS and email invitation links)
+# IMPORTANT: Change this to your production URL in production!
+# Example: https://your-app-name-xxxxxxx.me-central2.run.app
+FRONTEND_URL=http://localhost:5173
+
+# Environment
+NODE_ENV=development
+
+# JWT Secret (generate a random string for production)
+JWT_SECRET=your-secret-key-here
+
+# NOTE: Do NOT use DATABASE_URL when using Cloud SQL with INSTANCE_CONNECTION_NAME
+# The two formats are mutually exclusive
+
+# ============================================
+# NELC Content API (rh-contents) Credentials
+# Required to fetch courses from NELC's national catalog
+# ============================================
+RH_CONTENTS_CLIENT_ID=your-client-id-here
+RH_CONTENTS_CLIENT_SECRET=your-client-secret-here
+RH_CONTENTS_TOKEN_URL=https://api-test.nelc.gov.sa/oauth2/v1/token
+RH_CONTENTS_BASE_URL=https://api-test.nelc.gov.sa/rh-contents/v1
+
+# ============================================
+# Neo4j API Credentials (for recommendations)
+# ============================================
+NEO4J_CLIENT_ID=your-neo4j-client-id
+NEO4J_CLIENT_SECRET=your-neo4j-client-secret
+NEO4J_TOKEN_URL=https://api.nelc.gov.sa/oauth2/v1/token
+NEO4J_BASE_URL=https://api.nelc.gov.sa/neo4j/v1
+NEO4J_IS_PROD=false
+
+# ============================================
+# Learner Skills API (for CV skill extraction)
+# Uses same OAuth2 credentials as Neo4j (NEO4J_CLIENT_ID/SECRET)
+# ============================================
+LEARNER_SKILLS_BASE_URL=https://api-test.nelc.gov.sa/learner-skills/v1
+LEARNER_SKILLS_TOKEN_URL=https://api-test.nelc.gov.sa/oauth2/v1/token
+
+# ============================================
+# Gmail SMTP Configuration (for sending invitation emails)
+# ============================================
+# How to get App Password:
+# 1. Go to https://myaccount.google.com/
+# 2. Enable 2-Step Verification
+# 3. Go to https://myaccount.google.com/apppasswords
+# 4. Generate app password for "Mail" and "Other (Custom name)"
+# 5. Copy the 16-character password (no spaces)
+# ============================================
+GMAIL_USER=your-email@gmail.com
+GMAIL_APP_PASSWORD=your_16_character_app_password
+GMAIL_FROM_EMAIL=your-email@gmail.com
+
