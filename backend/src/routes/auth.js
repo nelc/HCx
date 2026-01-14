@@ -7,6 +7,7 @@ const db = require('../db');
 const { authenticate } = require('../middleware/auth');
 const nelcApi = require('../services/nelcApi');
 const { sendPasswordResetEmail } = require('../services/emailService');
+const ldapService = require('../services/ldapService');
 
 const router = express.Router();
 
@@ -20,7 +21,7 @@ async function getUserNameWithNelc(user) {
     name_ar: user.name_ar,
     name_en: user.name_en
   };
-  
+
   // If user has a national ID, try to get name from NELC
   if (user.national_id) {
     try {
@@ -39,7 +40,7 @@ async function getUserNameWithNelc(user) {
       console.error('NELC name lookup failed:', error.message);
     }
   }
-  
+
   return names;
 }
 
@@ -49,19 +50,19 @@ router.post('/login', [
   body('password').notEmpty()
 ], async (req, res) => {
   // #region agent log
-  fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:login-entry',message:'Login attempt started',data:{email:req.body.email},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,D'})}).catch(()=>{});
+  fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'auth.js:login-entry', message: 'Login attempt started', data: { email: req.body.email }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'A,D' }) }).catch(() => { });
   // #endregion
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       // #region agent log
-      fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:validation-error',message:'Validation failed',data:{errors:errors.array()},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
+      fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'auth.js:validation-error', message: 'Validation failed', data: { errors: errors.array() }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'D' }) }).catch(() => { });
       // #endregion
       return res.status(400).json({ errors: errors.array() });
     }
-    
+
     const { email, password } = req.body;
-    
+
     const result = await db.query(`
       SELECT u.*, d.name_ar as department_name_ar, d.name_en as department_name_en,
              u.profile_completed
@@ -69,47 +70,47 @@ router.post('/login', [
       LEFT JOIN departments d ON u.department_id = d.id
       WHERE u.email = $1
     `, [email]);
-    
+
     // #region agent log
-    fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:db-query',message:'DB user lookup result',data:{email,userFound:result.rows.length>0},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C,D'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'auth.js:db-query', message: 'DB user lookup result', data: { email, userFound: result.rows.length > 0 }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'C,D' }) }).catch(() => { });
     // #endregion
-    
+
     if (result.rows.length === 0) {
       // #region agent log
-      fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:user-not-found',message:'User not found in DB',data:{email},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
+      fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'auth.js:user-not-found', message: 'User not found in DB', data: { email }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'D' }) }).catch(() => { });
       // #endregion
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-    
+
     const user = result.rows[0];
-    
+
     if (!user.is_active) {
       return res.status(403).json({ error: 'Account is deactivated' });
     }
-    
+
     const validPassword = await bcrypt.compare(password, user.password_hash);
     // #region agent log
-    fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:password-check',message:'Password validation result',data:{email,validPassword},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'auth.js:password-check', message: 'Password validation result', data: { email, validPassword }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'D' }) }).catch(() => { });
     // #endregion
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-    
+
     // Update last login
     await db.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
-    
+
     const token = jwt.sign(
       { userId: user.id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
-    
+
     // Remove password hash from response
     delete user.password_hash;
-    
+
     // Get name from NELC if user has national_id, fallback to database
     const names = await getUserNameWithNelc(user);
-    
+
     res.json({
       token,
       user: {
@@ -131,10 +132,198 @@ router.post('/login', [
     });
   } catch (error) {
     // #region agent log
-    fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:login-error',message:'Login exception',data:{error:error.message,stack:error.stack},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'auth.js:login-error', message: 'Login exception', data: { error: error.message, stack: error.stack }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'C' }) }).catch(() => { });
     // #endregion
     console.error('Login error:', error);
     res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// LDAP Login
+router.post('/ldap-login', [
+  body('username').notEmpty().withMessage('اسم المستخدم مطلوب'),
+  body('password').notEmpty().withMessage('كلمة المرور مطلوبة')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { username, password } = req.body;
+
+    console.log('LDAP login attempt for:', username);
+
+    // Authenticate against LDAP
+    let ldapUser;
+    try {
+      ldapUser = await ldapService.authenticateUser(username, password);
+      console.log('LDAP authentication successful for:', username);
+      console.log('LDAP User details:', JSON.stringify(ldapUser));
+    } catch (ldapError) {
+      console.error('LDAP authentication failed:', ldapError.message);
+      return res.status(401).json({ error: ldapError.message || 'فشل تسجيل الدخول عبر LDAP' });
+    }
+
+    // Check if user exists in our database by ldap_username or email (any auth_provider)
+    let result = await db.query(`
+      SELECT u.*, d.name_ar as department_name_ar, d.name_en as department_name_en,
+             u.profile_completed
+      FROM users u
+      LEFT JOIN departments d ON u.department_id = d.id
+      WHERE u.ldap_username = $1 OR u.email = $2
+    `, [username, ldapUser.email]);
+
+    let user;
+
+    console.log('DB Search Result:', result.rows.length, 'rows found');
+    if (result.rows.length > 0) {
+      console.log('Found user:', result.rows[0].email, 'Active:', result.rows[0].is_active, 'ID:', result.rows[0].id);
+    }
+
+    if (result.rows.length === 0) {
+      // Create new user from LDAP data
+      console.log('Creating new user from LDAP data:', ldapUser);
+
+      // Generate a placeholder email if LDAP doesn't provide one
+      const userEmail = ldapUser.email || `${username}@elc.local`;
+
+      // Parse display name for Arabic/English names
+      const displayName = ldapUser.displayName || ldapUser.cn || username;
+
+      const insertResult = await db.query(`
+        INSERT INTO users (
+          email, 
+          name_ar, 
+          name_en, 
+          role, 
+          auth_provider, 
+          ldap_username,
+          job_title_ar,
+          job_title_en,
+          employee_number,
+          is_active
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING *
+      `, [
+        userEmail,
+        displayName,
+        displayName,
+        'employee', // Default role for new LDAP users
+        'ldap',
+        username,
+        ldapUser.title || null,
+        ldapUser.title || null,
+        ldapUser.employeeId || null,
+        true
+      ]);
+
+      user = insertResult.rows[0];
+
+      // Fetch with department info
+      result = await db.query(`
+        SELECT u.*, d.name_ar as department_name_ar, d.name_en as department_name_en,
+               u.profile_completed
+        FROM users u
+        LEFT JOIN departments d ON u.department_id = d.id
+        WHERE u.id = $1
+      `, [user.id]);
+
+      user = result.rows[0];
+    } else {
+      user = result.rows[0];
+
+      // If user exists but doesn't have ldap_username linked, link it now
+      if (!user.ldap_username) {
+        console.log('Linking existing user to LDAP account:', user.email);
+        await db.query(`
+          UPDATE users 
+          SET ldap_username = $1, auth_provider = 'ldap'
+          WHERE id = $2
+        `, [username, user.id]);
+        user.ldap_username = username;
+        user.auth_provider = 'ldap';
+      }
+    }
+
+    // Update last login and sync LDAP data
+    await db.query(`
+      UPDATE users SET 
+        last_login = NOW(),
+        job_title_ar = COALESCE($2, job_title_ar),
+        job_title_en = COALESCE($3, job_title_en)
+      WHERE id = $1
+    `, [user.id, ldapUser.title, ldapUser.title]);
+
+    if (!user.is_active) {
+      return res.status(403).json({ error: 'الحساب معطل' });
+    }
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user.id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    // Get name from NELC if user has national_id, fallback to database
+    const names = await getUserNameWithNelc(user);
+
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name_ar: names.name_ar,
+        name_en: names.name_en,
+        role: user.role,
+        department_id: user.department_id,
+        department_name_ar: user.department_name_ar,
+        department_name_en: user.department_name_en,
+        job_title_ar: user.job_title_ar,
+        job_title_en: user.job_title_en,
+        employee_number: user.employee_number,
+        national_id: user.national_id,
+        avatar_url: user.avatar_url,
+        profile_completed: user.profile_completed || false,
+        auth_provider: user.auth_provider
+      }
+    });
+  } catch (error) {
+    console.error('LDAP Login error:', error);
+    res.status(500).json({ error: 'فشل تسجيل الدخول' });
+  }
+});
+
+// Get LDAP configuration (for debugging/info)
+router.get('/ldap-config', authenticate, async (req, res) => {
+  // Only admins can see LDAP config
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  try {
+    const config = ldapService.getConfig();
+    res.json(config);
+  } catch (error) {
+    console.error('Get LDAP config error:', error);
+    res.status(500).json({ error: 'Failed to get LDAP configuration' });
+  }
+});
+
+// Test LDAP connection (admin only)
+router.get('/ldap-test', authenticate, async (req, res) => {
+  // Only admins can test LDAP connection
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  try {
+    await ldapService.testConnection();
+    res.json({ success: true, message: 'LDAP connection successful' });
+  } catch (error) {
+    console.error('LDAP test error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -150,16 +339,16 @@ router.get('/me', authenticate, async (req, res) => {
       LEFT JOIN departments d ON u.department_id = d.id
       WHERE u.id = $1
     `, [req.user.id]);
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
-    
+
     const user = result.rows[0];
-    
+
     // Get name from NELC if user has national_id, fallback to database
     const names = await getUserNameWithNelc(user);
-    
+
     res.json({
       ...user,
       name_ar: names.name_ar,
@@ -182,23 +371,54 @@ router.post('/change-password', authenticate, [
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
-    
+
     const { currentPassword, newPassword } = req.body;
-    
+
     const result = await db.query('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
     const validPassword = await bcrypt.compare(currentPassword, result.rows[0].password_hash);
-    
+
     if (!validPassword) {
       return res.status(400).json({ error: 'Current password is incorrect' });
     }
-    
+
     const newHash = await bcrypt.hash(newPassword, 10);
     await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.user.id]);
-    
+
     res.json({ message: 'Password changed successfully' });
   } catch (error) {
     console.error('Change password error:', error);
     res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+// Set password for LDAP/SSO users (no old password required)
+router.post('/set-password', authenticate, [
+  body('newPassword').isLength({ min: 6 }).withMessage('كلمة المرور يجب أن تكون 6 أحرف على الأقل')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { newPassword } = req.body;
+
+    // Check if user is LDAP/SSO user
+    const userResult = await db.query('SELECT auth_provider, password_hash FROM users WHERE id = $1', [req.user.id]);
+    const user = userResult.rows[0];
+
+    // Only allow setting password for LDAP/SSO users who don't have a password yet
+    if (user.auth_provider === 'local' && user.password_hash) {
+      return res.status(400).json({ error: 'استخدم خيار تغيير كلمة المرور بدلاً من ذلك' });
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.user.id]);
+
+    res.json({ message: 'تم تعيين كلمة المرور بنجاح' });
+  } catch (error) {
+    console.error('Set password error:', error);
+    res.status(500).json({ error: 'فشل في تعيين كلمة المرور' });
   }
 });
 
@@ -211,43 +431,43 @@ router.post('/forgot-password', [
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
-    
+
     const { email } = req.body;
-    
+
     // Find user by email
     const userResult = await db.query(
       'SELECT id, email, name_ar, name_en, is_active FROM users WHERE email = $1',
       [email]
     );
-    
+
     // Always return success to prevent email enumeration attacks
     if (userResult.rows.length === 0) {
       console.log('Password reset requested for non-existent email:', email);
-      return res.json({ 
-        message: 'إذا كان البريد الإلكتروني مسجلاً، سيتم إرسال رابط إعادة تعيين كلمة المرور' 
+      return res.json({
+        message: 'إذا كان البريد الإلكتروني مسجلاً، سيتم إرسال رابط إعادة تعيين كلمة المرور'
       });
     }
-    
+
     const user = userResult.rows[0];
-    
+
     // Allow password reset even for inactive users - they might need to reset before being reactivated
-    
+
     // Generate secure reset token
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
-    
+
     // Invalidate any existing tokens for this user
     await db.query(
       'UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL',
       [user.id]
     );
-    
+
     // Save the new token
     await db.query(
       'INSERT INTO password_reset_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)',
       [user.id, token, expiresAt]
     );
-    
+
     // Send email
     try {
       await sendPasswordResetEmail(user.email, user.name_ar || user.name_en, token);
@@ -256,9 +476,9 @@ router.post('/forgot-password', [
       console.error('Failed to send password reset email:', emailError.message);
       // Still return success to prevent email enumeration
     }
-    
-    res.json({ 
-      message: 'إذا كان البريد الإلكتروني مسجلاً، سيتم إرسال رابط إعادة تعيين كلمة المرور' 
+
+    res.json({
+      message: 'إذا كان البريد الإلكتروني مسجلاً، سيتم إرسال رابط إعادة تعيين كلمة المرور'
     });
   } catch (error) {
     console.error('Forgot password error:', error);
@@ -270,7 +490,7 @@ router.post('/forgot-password', [
 router.get('/verify-reset-token/:token', async (req, res) => {
   try {
     const { token } = req.params;
-    
+
     const result = await db.query(
       `SELECT prt.*, u.email, u.name_ar, u.name_en 
        FROM password_reset_tokens prt
@@ -278,17 +498,17 @@ router.get('/verify-reset-token/:token', async (req, res) => {
        WHERE prt.token = $1 AND prt.expires_at > NOW() AND prt.used_at IS NULL`,
       [token]
     );
-    
+
     if (result.rows.length === 0) {
-      return res.status(400).json({ 
-        valid: false, 
-        error: 'الرابط غير صالح أو منتهي الصلاحية' 
+      return res.status(400).json({
+        valid: false,
+        error: 'الرابط غير صالح أو منتهي الصلاحية'
       });
     }
-    
-    res.json({ 
-      valid: true, 
-      email: result.rows[0].email 
+
+    res.json({
+      valid: true,
+      email: result.rows[0].email
     });
   } catch (error) {
     console.error('Verify reset token error:', error);
@@ -306,9 +526,9 @@ router.post('/reset-password', [
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
-    
+
     const { token, password } = req.body;
-    
+
     // Find valid token
     const tokenResult = await db.query(
       `SELECT prt.*, u.id as user_id 
@@ -317,32 +537,32 @@ router.post('/reset-password', [
        WHERE prt.token = $1 AND prt.expires_at > NOW() AND prt.used_at IS NULL`,
       [token]
     );
-    
+
     if (tokenResult.rows.length === 0) {
-      return res.status(400).json({ 
-        error: 'الرابط غير صالح أو منتهي الصلاحية. يرجى طلب رابط جديد' 
+      return res.status(400).json({
+        error: 'الرابط غير صالح أو منتهي الصلاحية. يرجى طلب رابط جديد'
       });
     }
-    
+
     const resetToken = tokenResult.rows[0];
-    
+
     // Hash new password
     const passwordHash = await bcrypt.hash(password, 10);
-    
+
     // Update user password
     await db.query(
       'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2',
       [passwordHash, resetToken.user_id]
     );
-    
+
     // Mark token as used
     await db.query(
       'UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1',
       [resetToken.id]
     );
-    
+
     console.log('Password reset successful for user:', resetToken.user_id);
-    
+
     res.json({ message: 'تم إعادة تعيين كلمة المرور بنجاح' });
   } catch (error) {
     console.error('Reset password error:', error);

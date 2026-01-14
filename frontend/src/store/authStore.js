@@ -44,6 +44,30 @@ const useAuthStore = create(
         }
       },
 
+      ldapLogin: async (username, password) => {
+        set({ isLoading: true, error: null });
+        try {
+          const response = await api.post('/auth/ldap-login', { username, password });
+          const { token, user } = response.data;
+          
+          localStorage.setItem('token', token);
+          api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+          
+          set({ 
+            user, 
+            token, 
+            isAuthenticated: true, 
+            isLoading: false 
+          });
+          
+          return { success: true };
+        } catch (error) {
+          const message = error.response?.data?.error || 'فشل تسجيل الدخول عبر LDAP';
+          set({ error: message, isLoading: false });
+          return { success: false, error: message };
+        }
+      },
+
       logout: () => {
         localStorage.removeItem('token');
         delete api.defaults.headers.common['Authorization'];

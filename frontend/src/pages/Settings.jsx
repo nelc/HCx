@@ -214,6 +214,41 @@ export default function Settings() {
     }
   };
 
+  // Set password for LDAP/SSO users (no old password required)
+  const handleSetPassword = async (e) => {
+    e.preventDefault();
+    
+    if (!passwordForm.newPassword) {
+      toast.error('الرجاء إدخال كلمة المرور');
+      return;
+    }
+    
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      toast.error('كلمة المرور غير متطابقة');
+      return;
+    }
+    
+    if (passwordForm.newPassword.length < 6) {
+      toast.error('كلمة المرور يجب أن تكون 6 أحرف على الأقل');
+      return;
+    }
+    
+    setChangingPassword(true);
+    
+    try {
+      await api.post('/auth/set-password', {
+        newPassword: passwordForm.newPassword,
+      });
+      
+      toast.success('تم تعيين كلمة المرور بنجاح');
+      setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'فشل في تعيين كلمة المرور');
+    } finally {
+      setChangingPassword(false);
+    }
+  };
+
   const [showCVModal, setShowCVModal] = useState(false);
   const [cvImportHistory, setCvImportHistory] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -885,50 +920,109 @@ export default function Settings() {
               animate={{ opacity: 1, y: 0 }}
               className="card p-6"
             >
-              <h2 className="text-lg font-semibold text-primary-700 mb-6">تغيير كلمة المرور</h2>
-              
-              <form onSubmit={handleChangePassword} className="space-y-4 max-w-md">
-                <div>
-                  <label className="label">كلمة المرور الحالية</label>
-                  <input
-                    type="password"
-                    value={passwordForm.currentPassword}
-                    onChange={(e) => setPasswordForm({ ...passwordForm, currentPassword: e.target.value })}
-                    className="input"
-                    dir="ltr"
-                  />
-                </div>
-                
-                <div>
-                  <label className="label">كلمة المرور الجديدة</label>
-                  <input
-                    type="password"
-                    value={passwordForm.newPassword}
-                    onChange={(e) => setPasswordForm({ ...passwordForm, newPassword: e.target.value })}
-                    className="input"
-                    dir="ltr"
-                  />
-                </div>
-                
-                <div>
-                  <label className="label">تأكيد كلمة المرور الجديدة</label>
-                  <input
-                    type="password"
-                    value={passwordForm.confirmPassword}
-                    onChange={(e) => setPasswordForm({ ...passwordForm, confirmPassword: e.target.value })}
-                    className="input"
-                    dir="ltr"
-                  />
-                </div>
-                
-                <button
-                  type="submit"
-                  disabled={changingPassword}
-                  className="btn btn-primary"
-                >
-                  {changingPassword ? 'جاري التغيير...' : 'تغيير كلمة المرور'}
-                </button>
-              </form>
+              {/* LDAP/SSO User - Set Password */}
+              {(user?.auth_provider === 'ldap' || user?.auth_provider === 'sso') ? (
+                <>
+                  <h2 className="text-lg font-semibold text-primary-700 mb-4">تعيين كلمة مرور محلية</h2>
+                  
+                  <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                    <div className="flex items-start gap-3">
+                      <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+                        <KeyIcon className="w-5 h-5 text-blue-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm text-blue-800 font-medium">
+                          أنت مسجل عبر {user?.auth_provider === 'ldap' ? 'Active Directory (LDAP)' : 'SSO'}
+                        </p>
+                        <p className="text-sm text-blue-600 mt-1">
+                          يمكنك تعيين كلمة مرور محلية لاستخدامها كبديل عند تسجيل الدخول بالبريد الإلكتروني
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <form onSubmit={handleSetPassword} className="space-y-4 max-w-md">
+                    <div>
+                      <label className="label">كلمة المرور الجديدة</label>
+                      <input
+                        type="password"
+                        value={passwordForm.newPassword}
+                        onChange={(e) => setPasswordForm({ ...passwordForm, newPassword: e.target.value })}
+                        className="input"
+                        dir="ltr"
+                        placeholder="أدخل كلمة المرور (6 أحرف على الأقل)"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label className="label">تأكيد كلمة المرور</label>
+                      <input
+                        type="password"
+                        value={passwordForm.confirmPassword}
+                        onChange={(e) => setPasswordForm({ ...passwordForm, confirmPassword: e.target.value })}
+                        className="input"
+                        dir="ltr"
+                        placeholder="أعد إدخال كلمة المرور"
+                      />
+                    </div>
+                    
+                    <button
+                      type="submit"
+                      disabled={changingPassword}
+                      className="btn btn-primary"
+                    >
+                      {changingPassword ? 'جاري الحفظ...' : 'تعيين كلمة المرور'}
+                    </button>
+                  </form>
+                </>
+              ) : (
+                <>
+                  <h2 className="text-lg font-semibold text-primary-700 mb-6">تغيير كلمة المرور</h2>
+                  
+                  <form onSubmit={handleChangePassword} className="space-y-4 max-w-md">
+                    <div>
+                      <label className="label">كلمة المرور الحالية</label>
+                      <input
+                        type="password"
+                        value={passwordForm.currentPassword}
+                        onChange={(e) => setPasswordForm({ ...passwordForm, currentPassword: e.target.value })}
+                        className="input"
+                        dir="ltr"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label className="label">كلمة المرور الجديدة</label>
+                      <input
+                        type="password"
+                        value={passwordForm.newPassword}
+                        onChange={(e) => setPasswordForm({ ...passwordForm, newPassword: e.target.value })}
+                        className="input"
+                        dir="ltr"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label className="label">تأكيد كلمة المرور الجديدة</label>
+                      <input
+                        type="password"
+                        value={passwordForm.confirmPassword}
+                        onChange={(e) => setPasswordForm({ ...passwordForm, confirmPassword: e.target.value })}
+                        className="input"
+                        dir="ltr"
+                      />
+                    </div>
+                    
+                    <button
+                      type="submit"
+                      disabled={changingPassword}
+                      className="btn btn-primary"
+                    >
+                      {changingPassword ? 'جاري التغيير...' : 'تغيير كلمة المرور'}
+                    </button>
+                  </form>
+                </>
+              )}
             </motion.div>
           )}
         </div>

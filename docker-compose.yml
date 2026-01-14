@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: hcx-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-hrx}
+      POSTGRES_USER: ${DB_USER:-hrxuser}
+      POSTGRES_PASSWORD: ${DB_PASS:-lkdfvsdSDD565?}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - hcx-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-hrxuser} -d ${DB_NAME:-hrx}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Node.js Backend + Frontend (production build)
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hcx-app
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      # Database - Use DATABASE_URL if provided, otherwise use individual params
+      - DATABASE_URL=${DATABASE_URL:-}
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_USER=${DB_USER:-hrxuser}
+      - DB_PASS=${DB_PASS:-lkdfvsdSDD565?}
+      - DB_NAME=${DB_NAME:-hrx}
+      - FRONTEND_URL=${FRONTEND_URL:-https://hcx.elc.edu.sa}
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      - RH_CONTENTS_CLIENT_ID=${RH_CONTENTS_CLIENT_ID:-}
+      - RH_CONTENTS_CLIENT_SECRET=${RH_CONTENTS_CLIENT_SECRET:-}
+      - RH_CONTENTS_TOKEN_URL=${RH_CONTENTS_TOKEN_URL:-https://api-test.nelc.gov.sa/oauth2/v1/token}
+      - RH_CONTENTS_BASE_URL=${RH_CONTENTS_BASE_URL:-https://api-test.nelc.gov.sa/rh-contents/v1}
+      - NEO4J_CLIENT_ID=${NEO4J_CLIENT_ID:-}
+      - NEO4J_CLIENT_SECRET=${NEO4J_CLIENT_SECRET:-}
+      - NEO4J_TOKEN_URL=${NEO4J_TOKEN_URL:-https://api.nelc.gov.sa/oauth2/v1/token}
+      - NEO4J_BASE_URL=${NEO4J_BASE_URL:-https://api.nelc.gov.sa/neo4j/v1}
+      - NEO4J_IS_PROD=${NEO4J_IS_PROD:-false}
+      - LEARNER_SKILLS_BASE_URL=${LEARNER_SKILLS_BASE_URL:-https://api-test.nelc.gov.sa/learner-skills/v1}
+      - LEARNER_SKILLS_TOKEN_URL=${LEARNER_SKILLS_TOKEN_URL:-https://api-test.nelc.gov.sa/oauth2/v1/token}
+      # Gmail SMTP Configuration
+      - GMAIL_USER=${GMAIL_USER:-}
+      - GMAIL_APP_PASSWORD=${GMAIL_APP_PASSWORD:-}
+      # OpenAI Configuration
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - hcx-network
+    volumes:
+      - uploads_data:/app/uploads
+
+  # Nginx Reverse Proxy with SSL
+  nginx:
+    image: nginx:alpine
+    container_name: hcx-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl/elc.edu.sa-fullchain.crt:/etc/nginx/ssl/fullchain.crt:ro
+      - ./ssl/elc.edu.sa.key:/etc/nginx/ssl/privkey.key:ro
+    depends_on:
+      - app
+    networks:
+      - hcx-network
+
+networks:
+  hcx-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  uploads_data:
+
+

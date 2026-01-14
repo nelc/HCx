@@ -2,9 +2,20 @@ const OpenAI = require('openai');
 
 class CVParserService {
   constructor() {
-    this.openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY
-    });
+    // Lazy initialization - only create OpenAI client when actually needed
+    this._openai = null;
+  }
+
+  get openai() {
+    if (!this._openai) {
+      if (!process.env.OPENAI_API_KEY) {
+        throw new Error('OpenAI API key not configured');
+      }
+      this._openai = new OpenAI({
+        apiKey: process.env.OPENAI_API_KEY
+      });
+    }
+    return this._openai;
   }
 
   /**
