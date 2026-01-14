@@ -1,0 +1,81 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  SERVICE_NAME: hrx-training
+  REGION: me-central1
+  IMAGE_NAME: gcr.io/${{ secrets.GCP_PROJECT_ID }}/hrx-training
+
+jobs:
+  deploy:
+    name: Build and Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for GCR
+        run: |
+          gcloud auth configure-docker
+
+      - name: Build Docker Image
+        run: |
+          docker build \
+            -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/hrx-training:${{ github.sha }} \
+            -t gcr.io/${{ secrets.GCP_PROJECT_ID }}/hrx-training:latest \
+            .
+
+      - name: Push Docker Image to GCR
+        run: |
+          docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/hrx-training:${{ github.sha }}
+          docker push gcr.io/${{ secrets.GCP_PROJECT_ID }}/hrx-training:latest
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: hrx-training
+          region: me-central1
+          image: gcr.io/${{ secrets.GCP_PROJECT_ID }}/hrx-training:${{ github.sha }}
+          flags: |
+            --platform=managed
+            --allow-unauthenticated
+            --add-cloudsql-instances=${{ secrets.INSTANCE_CONNECTION_NAME }}
+            --set-env-vars=NODE_ENV=production,INSTANCE_CONNECTION_NAME=${{ secrets.INSTANCE_CONNECTION_NAME }}
+            --set-secrets=DB_USER=hrx-db-user:latest,DB_PASS=hrx-db-pass:latest,DB_NAME=hrx-db-name:latest,JWT_SECRET=hrx-jwt-secret:latest,OPENAI_API_KEY=hrx-openai-key:latest
+            --port=8080
+            --memory=1Gi
+            --cpu=1
+            --min-instances=0
+            --max-instances=10
+            --timeout=300
+
+      - name: Show Deployment URL
+        run: |
+          echo "Deployment completed!"
+          echo "Service URL: ${{ steps.deploy.outputs.url }}"
+          echo "Access your app at: https://learnub.futurex.sa/hrx-training"
+
