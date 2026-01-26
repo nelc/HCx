@@ -333,6 +333,97 @@ router.post('/department', authenticate, isTrainingOfficer, [
   }
 });
 
+// Assign test to multiple departments (with optional additional users)
+router.post('/departments', authenticate, isTrainingOfficer, [
+  body('test_id').isUUID(),
+  body('department_ids').isArray({ min: 1 }),
+  body('user_ids').optional().isArray(),
+  body('due_date').optional().isISO8601()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+    
+    const { test_id, department_ids, user_ids = [], due_date } = req.body;
+    
+    // Check if test exists and is published
+    const testCheck = await db.query('SELECT id, title_ar, title_en FROM tests WHERE id = $1 AND status = $2', [test_id, 'published']);
+    if (testCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'Test not found or not published' });
+    }
+    
+    // Get all active employees from selected departments
+    const employeesFromDepts = await db.query(
+      `SELECT DISTINCT id FROM users 
+       WHERE department_id = ANY($1) AND role = $2 AND is_active = true`,
+      [department_ids, 'employee']
+    );
+    
+    // Combine department employees with additional user_ids (unique)
+    const deptUserIds = employeesFromDepts.rows.map(e => e.id);
+    const allUserIds = [...new Set([...deptUserIds, ...user_ids])];
+    
+    if (allUserIds.length === 0) {
+      return res.status(400).json({ error: 'No active employees found in selected departments' });
+    }
+    
+    const assignments = [];
+    
+    for (const userId of allUserIds) {
+      // Check if already assigned
+      const existing = await db.query(
+        'SELECT id FROM test_assignments WHERE test_id = $1 AND user_id = $2',
+        [test_id, userId]
+      );
+      
+      if (existing.rows.length === 0) {
+        const result = await db.query(`
+          INSERT INTO test_assignments (test_id, user_id, assigned_by, due_date, notification_sent)
+          VALUES ($1, $2, $3, $4, true)
+          RETURNING *
+        `, [test_id, userId, req.user.id, due_date]);
+        
+        assignments.push(result.rows[0]);
+        
+        // Create notification
+        await db.query(`
+          INSERT INTO notifications (user_id, type, title_ar, title_en, message_ar, message_en, link, metadata)
+          VALUES ($1, 'test_assigned', 'تقييم جديد متاح', 'New Assessment Available',
+                  $2, $3, '/assessments', $4)
+        `, [
+          userId,
+          `تم تعيين تقييم جديد لك: ${testCheck.rows[0].title_ar}`,
+          `A new assessment has been assigned to you: ${testCheck.rows[0].title_en}`,
+          JSON.stringify({ test_id, assignment_id: result.rows[0].id })
+        ]);
+        
+        // Send email notification
+        const userResult = await db.query('SELECT email, name_ar FROM users WHERE id = $1', [userId]);
+        if (userResult.rows.length > 0) {
+          const user = userResult.rows[0];
+          sendTestAssignedEmail(user.email, user.name_ar, {
+            title_ar: testCheck.rows[0].title_ar,
+            title_en: testCheck.rows[0].title_en,
+            due_date: due_date
+          }).catch(err => console.error('Failed to send test assigned email:', err));
+        }
+      }
+    }
+    
+    res.status(201).json({
+      message: `Test assigned to ${assignments.length} employees from ${department_ids.length} department(s)`,
+      assignments,
+      total_departments: department_ids.length,
+      total_assigned: assignments.length
+    });
+  } catch (error) {
+    console.error('Assign to departments error:', error);
+    res.status(500).json({ error: 'Failed to assign test to departments' });
+  }
+});
+
 // Start test (employee)
 router.post('/:id/start', authenticate, async (req, res) => {
   try {

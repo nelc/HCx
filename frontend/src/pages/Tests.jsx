@@ -32,7 +32,7 @@ export default function Tests() {
   const [employees, setEmployees] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [selectedEmployees, setSelectedEmployees] = useState([]);
-  const [selectedDepartment, setSelectedDepartment] = useState('');
+  const [selectedDepartments, setSelectedDepartments] = useState([]);
   const [assigning, setAssigning] = useState(false);
 
   useEffect(() => {
@@ -122,18 +122,19 @@ export default function Tests() {
   };
 
   const handleAssign = async () => {
-    if (selectedEmployees.length === 0 && !selectedDepartment) {
-      toast.error('الرجاء اختيار موظفين أو قسم');
+    if (selectedEmployees.length === 0 && selectedDepartments.length === 0) {
+      toast.error('الرجاء اختيار موظفين أو أقسام');
       return;
     }
     
     setAssigning(true);
     
     try {
-      if (selectedDepartment) {
-        await api.post('/assignments/department', {
+      if (selectedDepartments.length > 0) {
+        await api.post('/assignments/departments', {
           test_id: testToAssign.id,
-          department_id: selectedDepartment,
+          department_ids: selectedDepartments,
+          user_ids: selectedEmployees.length > 0 ? selectedEmployees : undefined,
         });
       } else {
         await api.post('/assignments', {
@@ -146,7 +147,7 @@ export default function Tests() {
       setShowAssignModal(false);
       setTestToAssign(null);
       setSelectedEmployees([]);
-      setSelectedDepartment('');
+      setSelectedDepartments([]);
       fetchTests();
     } catch (error) {
       toast.error('فشل في تعيين التقييم');
@@ -400,64 +401,90 @@ export default function Tests() {
               </p>
             )}
             
-            {/* Assign to department */}
+            {/* Assign to departments - Multi-select */}
             <div className="mb-6">
-              <label className="label">تعيين لقسم كامل</label>
-              <select
-                value={selectedDepartment}
-                onChange={(e) => {
-                  setSelectedDepartment(e.target.value);
-                  if (e.target.value) setSelectedEmployees([]);
-                }}
-                className="input"
-              >
-                <option value="">اختر قسم</option>
+              <label className="label">تعيين لأقسام</label>
+              <div className="max-h-32 overflow-y-auto border border-slate-200 rounded-xl">
                 {departments.map(dept => (
-                  <option key={dept.id} value={dept.id}>{dept.name_ar}</option>
+                  <label
+                    key={dept.id}
+                    className="flex items-center gap-3 p-3 hover:bg-slate-50 cursor-pointer border-b border-slate-100 last:border-0"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedDepartments.includes(dept.id)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedDepartments([...selectedDepartments, dept.id]);
+                        } else {
+                          setSelectedDepartments(selectedDepartments.filter(id => id !== dept.id));
+                        }
+                      }}
+                      className="w-4 h-4 rounded border-slate-300 text-primary-600"
+                    />
+                    <span className="font-medium text-slate-700">{dept.name_ar}</span>
+                  </label>
                 ))}
-              </select>
+              </div>
+              {selectedDepartments.length > 0 && (
+                <p className="text-sm text-slate-500 mt-2">
+                  تم اختيار {selectedDepartments.length} قسم
+                </p>
+              )}
             </div>
             
-            {!selectedDepartment && (
-              <>
-                <div className="text-center text-slate-500 my-4">- أو -</div>
-                
-                {/* Select employees */}
-                <div>
-                  <label className="label">اختيار موظفين محددين</label>
-                  <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-xl">
-                    {employees.map(emp => (
-                      <label
-                        key={emp.id}
-                        className="flex items-center gap-3 p-3 hover:bg-slate-50 cursor-pointer border-b border-slate-100 last:border-0"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selectedEmployees.includes(emp.id)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedEmployees([...selectedEmployees, emp.id]);
-                            } else {
-                              setSelectedEmployees(selectedEmployees.filter(id => id !== emp.id));
-                            }
-                          }}
-                          className="w-4 h-4 rounded border-slate-300 text-primary-600"
-                        />
-                        <div>
-                          <p className="font-medium text-slate-700">{emp.name_ar}</p>
-                          <p className="text-xs text-slate-500">{emp.department_name_ar}</p>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                  {selectedEmployees.length > 0 && (
-                    <p className="text-sm text-slate-500 mt-2">
-                      تم اختيار {selectedEmployees.length} موظف
-                    </p>
-                  )}
-                </div>
-              </>
-            )}
+            <div className="text-center text-slate-500 my-4">- أو اختر موظفين إضافيين -</div>
+            
+            {/* Select employees */}
+            <div>
+              <label className="label">اختيار موظفين محددين</label>
+              <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-xl">
+                {/* Select All checkbox */}
+                <label className="flex items-center gap-3 p-3 bg-slate-50 border-b border-slate-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedEmployees.length === employees.length && employees.length > 0}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedEmployees(employees.map(emp => emp.id));
+                      } else {
+                        setSelectedEmployees([]);
+                      }
+                    }}
+                    className="w-4 h-4 rounded border-slate-300 text-primary-600"
+                  />
+                  <span className="font-medium text-slate-700">تحديد الكل</span>
+                </label>
+                {employees.map(emp => (
+                  <label
+                    key={emp.id}
+                    className="flex items-center gap-3 p-3 hover:bg-slate-50 cursor-pointer border-b border-slate-100 last:border-0"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedEmployees.includes(emp.id)}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedEmployees([...selectedEmployees, emp.id]);
+                        } else {
+                          setSelectedEmployees(selectedEmployees.filter(id => id !== emp.id));
+                        }
+                      }}
+                      className="w-4 h-4 rounded border-slate-300 text-primary-600"
+                    />
+                    <div>
+                      <p className="font-medium text-slate-700">{emp.name_ar}</p>
+                      <p className="text-xs text-slate-500">{emp.department_name_ar}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+              {selectedEmployees.length > 0 && (
+                <p className="text-sm text-slate-500 mt-2">
+                  تم اختيار {selectedEmployees.length} موظف
+                </p>
+              )}
+            </div>
             
             <div className="flex gap-3 mt-6">
               <button
@@ -465,7 +492,7 @@ export default function Tests() {
                   setShowAssignModal(false);
                   setTestToAssign(null);
                   setSelectedEmployees([]);
-                  setSelectedDepartment('');
+                  setSelectedDepartments([]);
                 }}
                 className="btn btn-secondary flex-1"
               >
@@ -473,7 +500,7 @@ export default function Tests() {
               </button>
               <button
                 onClick={handleAssign}
-                disabled={assigning || (selectedEmployees.length === 0 && !selectedDepartment)}
+                disabled={assigning || (selectedEmployees.length === 0 && selectedDepartments.length === 0)}
                 className="btn btn-primary flex-1"
               >
                 {assigning ? 'جاري التعيين...' : 'تعيين'}
