@@ -230,4 +230,38 @@ router.post('/recalculate/:assignmentId', authenticate, isTrainingOfficer, async
   }
 });
 
+// Delete a result (completed assignment) with all related data
+router.delete('/:assignmentId', authenticate, isTrainingOfficer, async (req, res) => {
+  try {
+    const { assignmentId } = req.params;
+    
+    // Verify assignment exists and is completed
+    const assignment = await db.query(
+      'SELECT id, user_id, test_id FROM test_assignments WHERE id = $1 AND status = $2',
+      [assignmentId, 'completed']
+    );
+    
+    if (assignment.rows.length === 0) {
+      return res.status(404).json({ error: 'Completed assignment not found' });
+    }
+    
+    // Delete in order: analysis_results -> responses -> test_assignments
+    // This handles the foreign key constraints
+    
+    // 1. Delete analysis results
+    await db.query('DELETE FROM analysis_results WHERE assignment_id = $1', [assignmentId]);
+    
+    // 2. Delete responses
+    await db.query('DELETE FROM responses WHERE assignment_id = $1', [assignmentId]);
+    
+    // 3. Delete the test assignment
+    await db.query('DELETE FROM test_assignments WHERE id = $1', [assignmentId]);
+    
+    res.json({ message: 'Result deleted successfully' });
+  } catch (error) {
+    console.error('Delete result error:', error);
+    res.status(500).json({ error: 'Failed to delete result' });
+  }
+});
+
 module.exports = router;

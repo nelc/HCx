@@ -568,6 +568,7 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
   ` : '';
   
   // If filtering by skill or domain, use different query patterns
+  // OPTIMIZED: All queries now apply pagination BEFORE expensive skill collection
   let query;
   if (skill && domain) {
     // Both skill and domain filters
@@ -579,7 +580,9 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
       WHERE toLower(s.skill_name) CONTAINS toLower('${escapedSkill}')
       AND (toLower(d.name_ar) CONTAINS toLower('${escapedDomain}') OR toLower(d.name_en) CONTAINS toLower('${escapedDomain}'))
       ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
-      WITH c, collect(DISTINCT {name_ar: s.skill_name, name_en: s.skill_name, relevance: t.relevance_score}) as skills
+      WITH DISTINCT c ORDER BY c.course_name SKIP ${skip} LIMIT ${limit}
+      OPTIONAL MATCH (c)-[t2:ALIGNS_TO_SKILL]->(s2:Skill)
+      WITH c, collect(DISTINCT {name_ar: s2.skill_name, name_en: s2.skill_name, relevance: t2.relevance_score}) as skills
       OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
       RETURN 
         c.course_id as course_id,
@@ -591,9 +594,6 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
         c.course_language as language,
         skills,
         src.source_name as platform
-      ORDER BY c.course_name
-      SKIP ${skip}
-      LIMIT ${limit}
     `;
   } else if (skill) {
     // Only skill filter
@@ -602,7 +602,9 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
       MATCH (c:Course)-[t:ALIGNS_TO_SKILL]->(s:Skill)
       WHERE toLower(s.skill_name) CONTAINS toLower('${escapedSkill}')
       ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
-      WITH c, collect(DISTINCT {name_ar: s.skill_name, name_en: s.skill_name, relevance: t.relevance_score}) as skills
+      WITH DISTINCT c ORDER BY c.course_name SKIP ${skip} LIMIT ${limit}
+      OPTIONAL MATCH (c)-[t2:ALIGNS_TO_SKILL]->(s2:Skill)
+      WITH c, collect(DISTINCT {name_ar: s2.skill_name, name_en: s2.skill_name, relevance: t2.relevance_score}) as skills
       OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
       RETURN 
         c.course_id as course_id,
@@ -614,9 +616,6 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
         c.course_language as language,
         skills,
         src.source_name as platform
-      ORDER BY c.course_name
-      SKIP ${skip}
-      LIMIT ${limit}
     `;
   } else if (domain) {
     // Only domain filter
@@ -625,6 +624,7 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
       MATCH (c:Course)-[:BELONGS_TO]->(d:Domain)
       WHERE (toLower(d.name_ar) CONTAINS toLower('${escapedDomain}') OR toLower(d.name_en) CONTAINS toLower('${escapedDomain}'))
       ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
+      WITH DISTINCT c ORDER BY c.course_name SKIP ${skip} LIMIT ${limit}
       OPTIONAL MATCH (c)-[t:ALIGNS_TO_SKILL]->(s:Skill)
       WITH c, collect(DISTINCT {name_ar: s.skill_name, name_en: s.skill_name, relevance: t.relevance_score}) as skills
       OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
@@ -638,9 +638,6 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
         c.course_language as language,
         skills,
         src.source_name as platform
-      ORDER BY c.course_name
-      SKIP ${skip}
-      LIMIT ${limit}
     `;
   } else {
     // No skill or domain filter
@@ -650,9 +647,11 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
       ? `${whereClause} AND ${titleCondition}`
       : `WHERE ${titleCondition}`;
     
+    // OPTIMIZED: Apply pagination BEFORE expensive skill collection to reduce memory usage
     query = `
       MATCH (c:Course)
       ${fullWhereClause}
+      WITH c ORDER BY c.course_name SKIP ${skip} LIMIT ${limit}
       OPTIONAL MATCH (c)-[t:ALIGNS_TO_SKILL]->(s:Skill)
       WITH c, collect(DISTINCT {name_ar: s.skill_name, name_en: s.skill_name, relevance: t.relevance_score}) as skills
       OPTIONAL MATCH (c)-[:DERIVED_FROM]->(src:Source)
@@ -666,9 +665,6 @@ async function searchCourses(filters = {}, skip = 0, limit = 20) {
         c.course_language as language,
         skills,
         src.source_name as platform
-      ORDER BY c.course_name
-      SKIP ${skip}
-      LIMIT ${limit}
     `;
   }
   

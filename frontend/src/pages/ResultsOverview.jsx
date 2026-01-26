@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import toast from 'react-hot-toast';
 import {
   MagnifyingGlassIcon,
   FunnelIcon,
@@ -12,6 +13,7 @@ import {
 } from '@heroicons/react/24/outline';
 import api from '../utils/api';
 import { formatDate } from '../utils/helpers';
+import DeleteConfirmationModal from '../components/DeleteConfirmationModal';
 
 export default function ResultsOverview() {
   const [results, setResults] = useState([]);
@@ -25,6 +27,8 @@ export default function ResultsOverview() {
     search: ''
   });
   const [showFilters, setShowFilters] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [resultToDelete, setResultToDelete] = useState(null);
 
   useEffect(() => {
     fetchData();
@@ -95,6 +99,26 @@ export default function ResultsOverview() {
     if (grade >= 70) return 'text-success-600 bg-success-50';
     if (grade >= 40) return 'text-warning-600 bg-warning-50';
     return 'text-danger-600 bg-danger-50';
+  };
+
+  const handleDelete = (result) => {
+    setResultToDelete(result);
+    setShowDeleteModal(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!resultToDelete) return;
+
+    try {
+      await api.delete(`/results-overview/${resultToDelete.assignment_id}`);
+      toast.success('تم حذف النتيجة بنجاح');
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'فشل في حذف النتيجة');
+    } finally {
+      setShowDeleteModal(false);
+      setResultToDelete(null);
+    }
   };
 
   if (loading) {
@@ -350,23 +374,32 @@ export default function ResultsOverview() {
                       </span>
                     </td>
                     <td className="text-center">
-                      {result.analysis_id ? (
-                        <Link
-                          to={`/results/${result.analysis_id}?assignment_id=${result.assignment_id}`}
-                          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors text-sm font-medium ${
-                            result.needs_grading 
-                              ? 'bg-amber-50 text-amber-700 hover:bg-amber-100' 
-                              : 'bg-primary-50 text-primary-700 hover:bg-primary-100'
-                          }`}
+                      <div className="flex items-center justify-center gap-2">
+                        {result.analysis_id ? (
+                          <Link
+                            to={`/results/${result.analysis_id}?assignment_id=${result.assignment_id}`}
+                            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors text-sm font-medium ${
+                              result.needs_grading 
+                                ? 'bg-amber-50 text-amber-700 hover:bg-amber-100' 
+                                : 'bg-primary-50 text-primary-700 hover:bg-primary-100'
+                            }`}
+                          >
+                            <EyeIcon className="w-4 h-4" />
+                            <span>{result.needs_grading ? 'تقييم الأسئلة' : 'عرض النتائج'}</span>
+                          </Link>
+                        ) : (
+                          <span className="text-slate-400 text-sm">
+                            لا يوجد تحليل
+                          </span>
+                        )}
+                        <button
+                          onClick={() => handleDelete(result)}
+                          className="p-1.5 text-danger-600 hover:bg-danger-50 rounded-lg transition-colors"
+                          title="حذف النتيجة"
                         >
-                          <EyeIcon className="w-4 h-4" />
-                          <span>{result.needs_grading ? 'تقييم الأسئلة' : 'عرض النتائج'}</span>
-                        </Link>
-                      ) : (
-                        <span className="text-slate-400 text-sm">
-                          لا يوجد تحليل
-                        </span>
-                      )}
+                          <XMarkIcon className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </motion.tr>
                 ))
@@ -375,6 +408,18 @@ export default function ResultsOverview() {
           </table>
         </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={showDeleteModal}
+        onClose={() => {
+          setShowDeleteModal(false);
+          setResultToDelete(null);
+        }}
+        onConfirm={confirmDelete}
+        title="تأكيد حذف النتيجة"
+        message={resultToDelete ? `هل أنت متأكد من حذف نتيجة "${resultToDelete.employee_name || 'غير محدد'}"؟\nسيتم حذف جميع الإجابات والتحليلات المرتبطة.` : ''}
+      />
     </div>
   );
 }
