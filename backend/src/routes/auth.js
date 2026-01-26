@@ -7,6 +7,7 @@ const db = require('../db');
 const { authenticate } = require('../middleware/auth');
 const nelcApi = require('../services/nelcApi');
 const { sendPasswordResetEmail } = require('../services/emailService');
+const ldapService = require('../services/ldapService');
 
 const router = express.Router();
 
@@ -48,15 +49,9 @@ router.post('/login', [
   body('email').isEmail().normalizeEmail(),
   body('password').notEmpty()
 ], async (req, res) => {
-  // #region agent log
-  fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:login-entry',message:'Login attempt started',data:{email:req.body.email},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,D'})}).catch(()=>{});
-  // #endregion
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      // #region agent log
-      fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:validation-error',message:'Validation failed',data:{errors:errors.array()},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
-      // #endregion
       return res.status(400).json({ errors: errors.array() });
     }
     
@@ -70,14 +65,7 @@ router.post('/login', [
       WHERE u.email = $1
     `, [email]);
     
-    // #region agent log
-    fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:db-query',message:'DB user lookup result',data:{email,userFound:result.rows.length>0},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C,D'})}).catch(()=>{});
-    // #endregion
-    
     if (result.rows.length === 0) {
-      // #region agent log
-      fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:user-not-found',message:'User not found in DB',data:{email},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
-      // #endregion
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     
@@ -88,9 +76,6 @@ router.post('/login', [
     }
     
     const validPassword = await bcrypt.compare(password, user.password_hash);
-    // #region agent log
-    fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:password-check',message:'Password validation result',data:{email,validPassword},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'D'})}).catch(()=>{});
-    // #endregion
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
@@ -130,11 +115,118 @@ router.post('/login', [
       }
     });
   } catch (error) {
-    // #region agent log
-    fetch('http://127.0.0.1:7244/ingest/1abd0113-6066-4d0a-a448-83f881edb18c',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:login-error',message:'Login exception',data:{error:error.message,stack:error.stack},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
     console.error('Login error:', error);
     res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// LDAP Login
+router.post('/login/ldap', [
+  body('username').notEmpty().withMessage('اسم المستخدم مطلوب'),
+  body('password').notEmpty().withMessage('كلمة المرور مطلوبة')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+    
+    const { username, password } = req.body;
+    
+    // Authenticate against LDAP
+    let ldapUser;
+    try {
+      ldapUser = await ldapService.authenticateUser(username, password);
+    } catch (ldapError) {
+      console.error('LDAP authentication failed:', ldapError.message);
+      return res.status(401).json({ error: ldapError.message || 'فشل تسجيل الدخول' });
+    }
+    
+    // Check if user exists in database by ldap_username or email
+    let result = await db.query(`
+      SELECT u.*, d.name_ar as department_name_ar, d.name_en as department_name_en
+      FROM users u
+      LEFT JOIN departments d ON u.department_id = d.id
+      WHERE u.ldap_username = $1 OR u.email = $2
+    `, [username, ldapUser.email]);
+    
+    let user;
+    
+    if (result.rows.length === 0) {
+      // Create new user from LDAP data
+      const insertResult = await db.query(`
+        INSERT INTO users (
+          email, name_ar, name_en, role, auth_provider, ldap_username,
+          job_title_ar, job_title_en, employee_number, is_active, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, NOW())
+        RETURNING *
+      `, [
+        ldapUser.email,
+        ldapUser.displayName || ldapUser.cn || username,
+        ldapUser.displayName || ldapUser.cn || username,
+        'employee', // Default role for LDAP users
+        'ldap',
+        username,
+        ldapUser.title || null,
+        ldapUser.title || null,
+        ldapUser.employeeId || null
+      ]);
+      
+      user = insertResult.rows[0];
+      console.log('Created new LDAP user:', user.email);
+    } else {
+      user = result.rows[0];
+      
+      // Update auth_provider and ldap_username if not already set
+      if (user.auth_provider !== 'ldap' || !user.ldap_username) {
+        await db.query(`
+          UPDATE users SET auth_provider = 'ldap', ldap_username = $1, updated_at = NOW()
+          WHERE id = $2
+        `, [username, user.id]);
+        user.auth_provider = 'ldap';
+        user.ldap_username = username;
+      }
+    }
+    
+    if (!user.is_active) {
+      return res.status(403).json({ error: 'الحساب معطل' });
+    }
+    
+    // Update last login
+    await db.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
+    
+    const token = jwt.sign(
+      { userId: user.id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    
+    // Get name from NELC if user has national_id
+    const names = await getUserNameWithNelc(user);
+    
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        name_ar: names.name_ar,
+        name_en: names.name_en,
+        role: user.role,
+        department_id: user.department_id,
+        department_name_ar: user.department_name_ar,
+        department_name_en: user.department_name_en,
+        job_title_ar: user.job_title_ar,
+        job_title_en: user.job_title_en,
+        employee_number: user.employee_number,
+        national_id: user.national_id,
+        avatar_url: user.avatar_url,
+        profile_completed: user.profile_completed || false,
+        auth_provider: 'ldap'
+      }
+    });
+  } catch (error) {
+    console.error('LDAP Login error:', error);
+    res.status(500).json({ error: 'فشل تسجيل الدخول' });
   }
 });
 

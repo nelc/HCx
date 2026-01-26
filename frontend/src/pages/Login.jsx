@@ -1,26 +1,37 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { EnvelopeIcon, LockClosedIcon, EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline';
+import { EnvelopeIcon, LockClosedIcon, EyeIcon, EyeSlashIcon, UserIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import useAuthStore from '../store/authStore';
 
 export default function Login() {
+  const [loginType, setLoginType] = useState('email'); // 'email' or 'ldap'
   const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const { login, isLoading, error } = useAuthStore();
+  const { login, ldapLogin, isLoading, error } = useAuthStore();
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    if (!email || !password) {
-      toast.error('الرجاء إدخال البريد الإلكتروني وكلمة المرور');
-      return;
+    let result;
+    
+    if (loginType === 'ldap') {
+      if (!username || !password) {
+        toast.error('الرجاء إدخال اسم المستخدم وكلمة المرور');
+        return;
+      }
+      result = await ldapLogin(username, password);
+    } else {
+      if (!email || !password) {
+        toast.error('الرجاء إدخال البريد الإلكتروني وكلمة المرور');
+        return;
+      }
+      result = await login(email, password);
     }
-
-    const result = await login(email, password);
     
     if (result.success) {
       toast.success('تم تسجيل الدخول بنجاح');
@@ -48,32 +59,80 @@ export default function Login() {
 
           {/* Form */}
           <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Email */}
-            <div>
-              <label className="label">البريد الإلكتروني</label>
-              <div className="relative">
-                <EnvelopeIcon className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="input pr-12"
-                  placeholder="example@company.com"
-                  dir="ltr"
-                />
-              </div>
+            {/* Login Type Toggle */}
+            <div className="flex bg-slate-100 rounded-xl p-1">
+              <button
+                type="button"
+                onClick={() => setLoginType('email')}
+                className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-all ${
+                  loginType === 'email'
+                    ? 'bg-white text-primary-600 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-800'
+                }`}
+              >
+                البريد الإلكتروني
+              </button>
+              <button
+                type="button"
+                onClick={() => setLoginType('ldap')}
+                className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-all ${
+                  loginType === 'ldap'
+                    ? 'bg-white text-primary-600 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-800'
+                }`}
+              >
+                حساب المركز
+              </button>
             </div>
+
+            {/* Email Field - shown for email login */}
+            {loginType === 'email' && (
+              <div>
+                <label className="label">البريد الإلكتروني</label>
+                <div className="relative">
+                  <EnvelopeIcon className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="input pr-12"
+                    placeholder="example@company.com"
+                    dir="ltr"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Username Field - shown for LDAP login */}
+            {loginType === 'ldap' && (
+              <div>
+                <label className="label">اسم المستخدم</label>
+                <div className="relative">
+                  <UserIcon className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                  <input
+                    type="text"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    className="input pr-12"
+                    placeholder="اسم المستخدم"
+                    dir="ltr"
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Password */}
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="label mb-0">كلمة المرور</label>
-                <Link 
-                  to="/forgot-password" 
-                  className="text-sm text-primary-600 hover:text-primary-700 transition-colors"
-                >
-                  نسيت كلمة المرور؟
-                </Link>
+                {loginType === 'email' && (
+                  <Link 
+                    to="/forgot-password" 
+                    className="text-sm text-primary-600 hover:text-primary-700 transition-colors"
+                  >
+                    نسيت كلمة المرور؟
+                  </Link>
+                )}
               </div>
               <div className="relative">
                 <LockClosedIcon className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />

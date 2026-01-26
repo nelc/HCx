@@ -556,9 +556,6 @@ export default function Recommendations() {
                   <>
                     <CheckCircleSolidIcon className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                     <h3 className="text-slate-600 font-medium mb-2">لا توجد دورات مكتملة</h3>
-                    <p className="text-slate-500 text-sm">
-                      لم تكمل أي دورة في هذا القسم بعد. أكمل دوراتك وارفع الشهادات أو زامن من NELC.
-                    </p>
                   </>
                 ) : (
                   <>

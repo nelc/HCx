@@ -146,6 +146,9 @@ router.get('/', authenticate, isTrainingOfficer, async (req, res) => {
 // Get all recommendations organized in sections (test results, interests, career aspirations)
 // OPTIMIZED: Batch queries, parallel Neo4j calls, parallel DB queries
 router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
+  // #region agent log
+  fetch('http://127.0.0.1:7246/ingest/f7fdf2ae-e733-4844-a475-feca4341df81',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recommendations.js:sections-entry',message:'Sections endpoint called',data:{userId:req.params.userId,userRole:req.user?.role},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
+  // #endregion
   try {
     const { userId } = req.params;
     const { limit = 10 } = req.query;
@@ -156,6 +159,9 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
+    // #region agent log
+    fetch('http://127.0.0.1:7246/ingest/f7fdf2ae-e733-4844-a475-feca4341df81',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recommendations.js:phase1-start',message:'Starting PHASE 1 parallel queries',data:{userId,parsedLimit},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
     // ============ PHASE 1: Parallel fetch of user data and initial queries ============
     // Run independent queries in parallel
     const [userProfileResult, gapsResult, hiddenCoursesResults, adminCoursesResult, certificatesResult] = await Promise.all([
@@ -209,6 +215,9 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
       `, [userId]).catch(() => ({ rows: [] }))
     ]);
 
+    // #region agent log
+    fetch('http://127.0.0.1:7246/ingest/f7fdf2ae-e733-4844-a475-feca4341df81',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recommendations.js:phase1-complete',message:'PHASE 1 queries completed',data:{userFound:userProfileResult.rows.length>0,gapsFound:gapsResult.rows.length,adminCourses:adminCoursesResult.rows.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,D'})}).catch(()=>{});
+    // #endregion
     // Process user profile
     let user = { id: userId, interests: [], desired_domains: [], national_id: null };
     if (userProfileResult.rows.length === 0) {
@@ -327,6 +336,9 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
     await Promise.all(phase2Promises);
 
     // ============ PHASE 2.5: Sync user's skill gaps to Neo4j (required for graph queries) ============
+    // #region agent log
+    fetch('http://127.0.0.1:7246/ingest/f7fdf2ae-e733-4844-a475-feca4341df81',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recommendations.js:phase2.5-start',message:'Starting Neo4j sync',data:{skillRequirementsCount:Object.keys(skillRequirements).length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B,C'})}).catch(()=>{});
+    // #endregion
     if (Object.keys(skillRequirements).length > 0) {
       try {
         // Delete existing NEEDS relationships for this user
@@ -389,6 +401,9 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
       }
     }
     
+    // #region agent log
+    fetch('http://127.0.0.1:7246/ingest/f7fdf2ae-e733-4844-a475-feca4341df81',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recommendations.js:phase3-start',message:'Starting PHASE 3 recommendations fetch',data:{priorityGapsCount:priorityGaps.length,hasInterests:interests&&interests.length>0,hasDesiredDomains:desiredDomains&&desiredDomains.length>0},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B,C'})}).catch(()=>{});
+    // #endregion
     const [testRecs, interestRecs, careerRecs] = await Promise.all([
       // Test-based recommendations using SKILL + LEVEL matching (NOT Neo4j graph)
       // This directly matches skills from PostgreSQL course_skills + AI-extracted skills
@@ -423,6 +438,15 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
         : Promise.resolve([])
     ]);
 
+    // DEBUG: Log Neo4j query results
+    console.log(`📊 PHASE 3 Results - Test: ${testRecs?.length || 0}, Interest: ${interestRecs?.length || 0}, Career: ${careerRecs?.length || 0}`);
+    if (interestRecs && interestRecs.length > 0) {
+      console.log(`📋 Sample Interest course IDs: ${interestRecs.slice(0, 3).map(r => r.course_id).join(', ')}`);
+    }
+    if (careerRecs && careerRecs.length > 0) {
+      console.log(`📋 Sample Career course IDs: ${careerRecs.slice(0, 3).map(r => r.course_id).join(', ')}`);
+    }
+
     // ============ PHASE 4: Process skill-based test recommendations ============
     // Test recommendations now come directly from PostgreSQL with full course details
     // We only need to fetch course details for interest and career recommendations from Neo4j
@@ -435,27 +459,53 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
     const neo4jCourseIds = [...new Set(neo4jOnlyRecs.map(r => r.course_id).filter(Boolean))];
     
     // Batch fetch courses for Neo4j recommendations only
+    // Neo4j returns numeric course IDs (e.g., "17947804") which map to courses.nelc_course_id
+    // while PostgreSQL courses.id uses UUIDs
     let courseMap = new Map();
     if (neo4jCourseIds.length > 0) {
+      // #region agent log
+      fetch('http://127.0.0.1:7246/ingest/f7fdf2ae-e733-4844-a475-feca4341df81',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recommendations.js:phase4-course-lookup',message:'Looking up Neo4j course IDs',data:{neo4jCourseIds:neo4jCourseIds.slice(0,5),count:neo4jCourseIds.length},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'F'})}).catch(()=>{});
+      // #endregion
+      
+      // Convert course IDs to strings for nelc_course_id matching
+      const courseIdStrings = neo4jCourseIds.map(id => String(id));
+      
+      // Query using nelc_course_id (for Neo4j/NELC courses) - this handles numeric IDs
       const coursesResult = await db.query(`
-        SELECT c.*, json_agg(
+        SELECT c.*, c.nelc_course_id as neo4j_course_id, json_agg(
           json_build_object('id', s.id, 'name_ar', s.name_ar, 'name_en', s.name_en)
         ) FILTER (WHERE s.id IS NOT NULL) as skills
         FROM courses c
         LEFT JOIN course_skills cs ON c.id = cs.course_id
         LEFT JOIN skills s ON cs.skill_id = s.id
-        WHERE c.id = ANY($1)
+        WHERE c.nelc_course_id = ANY($1)
         GROUP BY c.id
-      `, [neo4jCourseIds]);
+      `, [courseIdStrings]);
       
-      courseMap = new Map(coursesResult.rows.map(c => [c.id, c]));
+      // Map by nelc_course_id (the Neo4j course_id) for lookup
+      coursesResult.rows.forEach(c => {
+        if (c.nelc_course_id) {
+          courseMap.set(c.nelc_course_id, c);
+          courseMap.set(String(c.nelc_course_id), c);
+        }
+        // Also map by UUID id in case some recommendations use that
+        courseMap.set(c.id, c);
+      });
+      
+      // DEBUG: Log PostgreSQL course matching results
+      console.log(`📊 PHASE 4 PostgreSQL Lookup - Requested: ${neo4jCourseIds.length} Neo4j IDs, Found: ${coursesResult.rows.length} local matches`);
+      console.log(`📋 Matched nelc_course_ids: ${coursesResult.rows.map(c => c.nelc_course_id).join(', ') || 'none'}`);
+      if (neo4jCourseIds.length > coursesResult.rows.length) {
+        const matchedIds = new Set(coursesResult.rows.map(c => String(c.nelc_course_id)));
+        const unmatchedIds = neo4jCourseIds.filter(id => !matchedIds.has(String(id)));
+        console.log(`⚠️ Unmatched Neo4j course IDs (will use Neo4j data directly): ${unmatchedIds.slice(0, 5).join(', ')}${unmatchedIds.length > 5 ? '...' : ''}`);
+      }
     }
 
     // ============ PHASE 5: Build enriched recommendations ============
     // For Neo4j recommendations (interests/career)
     const enrichNeo4jRecommendation = (rec, source, section) => {
       const course = courseMap.get(rec.course_id);
-      if (!course) return null;
       
       // Parse JSON strings from Neo4j if they exist
       let extractedSkills = [];
@@ -473,6 +523,34 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
         }
       } catch (e) {
         console.log('Error parsing Neo4j enrichment data:', e.message);
+      }
+      
+      // If no local course match found, use Neo4j data directly
+      // This allows courses that exist only in Neo4j to still appear in recommendations
+      if (!course) {
+        console.log(`📋 No local match for Neo4j course ${rec.course_id}, using Neo4j data directly`);
+        return {
+          course_id: rec.course_id,
+          name_ar: rec.name_ar,
+          name_en: rec.name_en,
+          description_ar: rec.description_ar,
+          description_en: rec.description_en,
+          url: rec.url || (rec.course_id ? `${FUTUREX_BASE_URL}/${rec.course_id}` : null),
+          platform: rec.platform || 'FutureX',
+          provider: rec.platform || 'FutureX',
+          language: rec.language,
+          recommendation_score: rec.recommendation_score || (rec.skill_coverage ? rec.skill_coverage * 10 : 0),
+          matching_skills: rec.matching_skills || [],
+          source: source,
+          section: section,
+          extracted_skills: extractedSkills,
+          learning_outcomes: learningOutcomes,
+          summary_ar: rec.summary_ar || null,
+          summary_en: rec.summary_en || null,
+          first_domain: rec.subject || null,
+          second_domain: null,
+          is_neo4j_only: true  // Flag to indicate this course has no local match
+        };
       }
       
       return {
@@ -527,6 +605,14 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
       .map(rec => enrichNeo4jRecommendation(rec, 'career_aspirations', 'future_path'))
       .filter(Boolean);
 
+    // DEBUG: Log enrichment results (before filtering)
+    console.log(`📊 PHASE 5 Enriched - Test: ${testBasedRecommendations.length}, Interest: ${interestBasedRecommendations.length}, Career: ${careerBasedRecommendations.length}`);
+    const neo4jOnlyInterest = interestBasedRecommendations.filter(r => r.is_neo4j_only).length;
+    const neo4jOnlyCareer = careerBasedRecommendations.filter(r => r.is_neo4j_only).length;
+    if (neo4jOnlyInterest > 0 || neo4jOnlyCareer > 0) {
+      console.log(`📋 Neo4j-only courses (no local match): Interest=${neo4jOnlyInterest}, Career=${neo4jOnlyCareer}`);
+    }
+
     // ============ PHASE 6: Remove duplicates and hidden courses ============
     const testCourseIds = new Set(testBasedRecommendations.map(r => r.course_id));
     const interestCourseIds = new Set(interestBasedRecommendations.map(r => r.course_id));
@@ -539,19 +625,47 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
     // Filter recommendations:
     // 1. Only show courses in the visible_courses whitelist (if whitelist exists)
     // 2. Exclude courses the user has personally hidden
+    // 3. Allow Neo4j-only courses (numeric IDs) to pass through even if not in whitelist
     const filterRecommendations = (recs) => {
       return recs.filter(r => {
         // Exclude user-hidden courses
         if (userHiddenCourseIds.has(r.course_id)) return false;
-        // Only include if in visible_courses whitelist (or whitelist is empty for backwards compat)
-        if (visibleCourseIds.size > 0 && !visibleCourseIds.has(r.course_id)) return false;
+        
+        // Check if this is a local PostgreSQL course (UUID format) or Neo4j-only course (numeric ID)
+        // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        const isLocalCourse = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(r.course_id);
+        
+        // For local courses, apply whitelist filter
+        // For Neo4j-only courses (numeric IDs), allow them through
+        if (isLocalCourse) {
+          if (visibleCourseIds.size > 0 && !visibleCourseIds.has(r.course_id)) return false;
+        } else {
+          // Neo4j-only course - check if we should allow it
+          // If is_neo4j_only flag is set, allow it through (these are courses from Neo4j with no local match)
+          if (r.is_neo4j_only) {
+            console.log(`✅ Allowing Neo4j-only course through filter: ${r.course_id}`);
+          }
+        }
+        
         return true;
       });
     };
     
+    // Store pre-filter counts for debugging
+    const preFilterTest = testBasedRecommendations.length;
+    const preFilterInterest = interestBasedRecommendations.length;
+    const preFilterCareer = careerBasedRecommendations.length;
+    
     testBasedRecommendations = filterRecommendations(testBasedRecommendations);
     interestBasedRecommendations = filterRecommendations(interestBasedRecommendations);
     careerBasedRecommendations = filterRecommendations(careerBasedRecommendations);
+
+    // DEBUG: Log filter results
+    console.log(`📊 PHASE 6 Filter Results - Whitelist size: ${visibleCourseIds.size}, Hidden: ${userHiddenCourseIds.size}`);
+    console.log(`📊 Test: ${preFilterTest} → ${testBasedRecommendations.length}, Interest: ${preFilterInterest} → ${interestBasedRecommendations.length}, Career: ${preFilterCareer} → ${careerBasedRecommendations.length}`);
+    if (testBasedRecommendations.length === 0 && interestBasedRecommendations.length === 0 && careerBasedRecommendations.length === 0) {
+      console.log(`⚠️ All recommendations filtered out! Check whitelist (visible_courses) and course ID matching.`);
+    }
 
     // ============ PHASE 7: Add completion info to all recommendations ============
     const addCompletionInfo = (recommendations, isAdminCourse = false) => {
@@ -744,6 +858,9 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
       futurex_courses: futurexCourses
     });
   } catch (error) {
+    // #region agent log
+    fetch('http://127.0.0.1:7246/ingest/f7fdf2ae-e733-4844-a475-feca4341df81',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'recommendations.js:sections-error',message:'Sections endpoint CAUGHT ERROR',data:{errorMessage:error.message,errorStack:error.stack?.substring(0,500),errorName:error.name},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
+    // #endregion
     console.error('Get sectioned recommendations error:', error);
     res.status(500).json({ 
       error: 'Failed to get recommendations',
