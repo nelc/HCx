@@ -166,7 +166,7 @@ export default function Recommendations() {
     setSelectedCourse({
       courseId: rec.source === 'admin_added' ? null : rec.course_id,
       adminCourseId: rec.source === 'admin_added' ? rec.id : null,
-      courseName: rec.name_ar || rec.course_title_ar
+      courseName: rec.name_ar || rec.course_title_ar || rec.name_en || 'دورة غير معروفة'
     });
     setShowCertificateModal(true);
   };
@@ -214,7 +214,7 @@ export default function Recommendations() {
             <div className="flex items-start justify-between gap-4 mb-2">
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-semibold text-lg text-slate-800">
-                  {rec.name_ar || rec.course_title_ar}
+                  {rec.name_ar || rec.course_title_ar || rec.name_en || 'دورة غير معروفة'}
                 </h3>
                 {(rec.first_domain || rec.subject) && (
                   <span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md text-xs font-medium flex items-center gap-1">

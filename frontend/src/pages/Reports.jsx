@@ -1310,7 +1310,7 @@ export default function Reports() {
                                               <div className="flex-1 min-w-0">
                                                 <div className="flex items-center gap-2 flex-wrap">
                                                   <h5 className="font-semibold text-slate-800">
-                                                    {rec.name_ar || rec.course_title_ar}
+                                                    {rec.name_ar || rec.course_title_ar || rec.name_en || 'دورة غير معروفة'}
                                                   </h5>
                                                   {rec.is_completed && (
                                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-success-100 text-success-700 rounded-full text-xs font-medium">

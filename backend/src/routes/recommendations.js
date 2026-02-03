@@ -528,11 +528,23 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
       // If no local course match found, use Neo4j data directly
       // This allows courses that exist only in Neo4j to still appear in recommendations
       if (!course) {
-        console.log(`📋 No local match for Neo4j course ${rec.course_id}, using Neo4j data directly`);
+        // Construct display name from available data with fallbacks
+        const displayNameAr = rec.name_ar || rec.name_en || 
+          (rec.course_id ? `دورة ${rec.course_id}` : 'دورة غير معروفة');
+        const displayNameEn = rec.name_en || rec.name_ar || 
+          (rec.course_id ? `Course ${rec.course_id}` : 'Unknown Course');
+        
+        // Log warning if course name is missing to help identify data issues
+        if (!rec.name_ar && !rec.name_en) {
+          console.warn(`⚠️ Neo4j course ${rec.course_id} has no name_ar or name_en. Using fallback: "${displayNameAr}"`);
+        } else {
+          console.log(`📋 No local match for Neo4j course ${rec.course_id}, using Neo4j data directly`);
+        }
+        
         return {
           course_id: rec.course_id,
-          name_ar: rec.name_ar,
-          name_en: rec.name_en,
+          name_ar: displayNameAr,
+          name_en: displayNameEn,
           description_ar: rec.description_ar,
           description_en: rec.description_en,
           url: rec.url || (rec.course_id ? `${FUTUREX_BASE_URL}/${rec.course_id}` : null),
@@ -623,10 +635,11 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
     );
 
     // Filter recommendations:
-    // 1. Only show courses in the visible_courses whitelist (if whitelist exists)
+    // 1. Only show courses in the visible_courses whitelist (if whitelist exists) - unless skipWhitelist is true
     // 2. Exclude courses the user has personally hidden
     // 3. Allow Neo4j-only courses (numeric IDs) to pass through even if not in whitelist
-    const filterRecommendations = (recs) => {
+    // 4. skipWhitelist=true bypasses admin visibility for sections like "مفضلات التعلم" (Learning Favorites)
+    const filterRecommendations = (recs, skipWhitelist = false) => {
       return recs.filter(r => {
         // Exclude user-hidden courses
         if (userHiddenCourseIds.has(r.course_id)) return false;
@@ -635,13 +648,12 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
         // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
         const isLocalCourse = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(r.course_id);
         
-        // For local courses, apply whitelist filter
+        // For local courses, apply whitelist filter (unless skipWhitelist is true)
         // For Neo4j-only courses (numeric IDs), allow them through
-        if (isLocalCourse) {
+        if (isLocalCourse && !skipWhitelist) {
           if (visibleCourseIds.size > 0 && !visibleCourseIds.has(r.course_id)) return false;
         } else {
-          // Neo4j-only course - check if we should allow it
-          // If is_neo4j_only flag is set, allow it through (these are courses from Neo4j with no local match)
+          // Neo4j-only course or skipWhitelist - allow it through
           if (r.is_neo4j_only) {
             console.log(`✅ Allowing Neo4j-only course through filter: ${r.course_id}`);
           }
@@ -657,7 +669,8 @@ router.get('/neo4j/:userId/sections', authenticate, async (req, res) => {
     const preFilterCareer = careerBasedRecommendations.length;
     
     testBasedRecommendations = filterRecommendations(testBasedRecommendations);
-    interestBasedRecommendations = filterRecommendations(interestBasedRecommendations);
+    // Skip whitelist for interest-based recommendations (مفضلات التعلم) - these should show all Neo4j courses
+    interestBasedRecommendations = filterRecommendations(interestBasedRecommendations, true);
     careerBasedRecommendations = filterRecommendations(careerBasedRecommendations);
 
     // DEBUG: Log filter results

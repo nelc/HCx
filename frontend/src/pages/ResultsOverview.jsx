@@ -10,6 +10,8 @@ import {
   XMarkIcon,
   ExclamationTriangleIcon,
   CheckCircleIcon,
+  ArrowDownTrayIcon,
+  ChevronDownIcon,
 } from '@heroicons/react/24/outline';
 import api from '../utils/api';
 import { formatDate } from '../utils/helpers';
@@ -29,6 +31,8 @@ export default function ResultsOverview() {
   const [showFilters, setShowFilters] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [resultToDelete, setResultToDelete] = useState(null);
+  const [downloading, setDownloading] = useState(false);
+  const [showDownloadMenu, setShowDownloadMenu] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -121,6 +125,63 @@ export default function ResultsOverview() {
     }
   };
 
+  const handleDownload = async (type) => {
+    setDownloading(true);
+    setShowDownloadMenu(false);
+    try {
+      let url = `/results-overview/export/${type}`;
+      
+      if (type === 'filtered') {
+        const params = new URLSearchParams();
+        if (filters.department_id) params.append('department_id', filters.department_id);
+        if (filters.test_id) params.append('test_id', filters.test_id);
+        if (filters.search) params.append('search', filters.search);
+        if (params.toString()) url += `?${params.toString()}`;
+      }
+      
+      const response = await api.get(url, { responseType: 'blob' });
+      
+      // Create download link
+      const blob = new Blob([response.data], { type: 'text/csv;charset=utf-8' });
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      
+      // Generate filename based on type
+      const dateStr = new Date().toISOString().split('T')[0];
+      const filenames = {
+        'users-results': `نتائج-الموظفين-${dateStr}.csv`,
+        'tests-summary': `ملخص-التقييمات-${dateStr}.csv`,
+        'filtered': `نتائج-مفلترة-${dateStr}.csv`
+      };
+      link.download = filenames[type] || `تصدير-${dateStr}.csv`;
+      
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+      
+      toast.success('تم تحميل الملف بنجاح');
+    } catch (error) {
+      console.error('Download error:', error);
+      toast.error('فشل في تحميل الملف');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  // Close download menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showDownloadMenu && !event.target.closest('.download-dropdown')) {
+        setShowDownloadMenu(false);
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showDownloadMenu]);
+
   if (loading) {
     return (
       <div className="min-h-[60vh] flex items-center justify-center">
@@ -140,10 +201,65 @@ export default function ResultsOverview() {
           <h1 className="text-2xl font-bold text-primary-700">النتائج والتحليلات</h1>
           <p className="text-slate-500 mt-1">عرض نتائج جميع الموظفين في التقييمات</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-4">
           <span className="text-sm text-slate-600">
             {filteredResults.length} نتيجة
           </span>
+          
+          {/* Download Dropdown */}
+          <div className="relative download-dropdown">
+            <button
+              onClick={() => setShowDownloadMenu(!showDownloadMenu)}
+              disabled={downloading}
+              className="btn btn-primary flex items-center gap-2"
+            >
+              {downloading ? (
+                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <ArrowDownTrayIcon className="w-5 h-5" />
+              )}
+              <span>تصدير CSV</span>
+              <ChevronDownIcon className="w-4 h-4" />
+            </button>
+            
+            {showDownloadMenu && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="absolute left-0 mt-2 w-56 bg-white rounded-lg shadow-lg border border-slate-200 py-2 z-50"
+              >
+                <button
+                  onClick={() => handleDownload('users-results')}
+                  className="w-full px-4 py-2 text-right text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-2"
+                >
+                  <ArrowDownTrayIcon className="w-4 h-4 text-slate-400" />
+                  <span>تصدير نتائج الموظفين</span>
+                </button>
+                <button
+                  onClick={() => handleDownload('tests-summary')}
+                  className="w-full px-4 py-2 text-right text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-2"
+                >
+                  <ArrowDownTrayIcon className="w-4 h-4 text-slate-400" />
+                  <span>تصدير ملخص التقييمات</span>
+                </button>
+                <div className="border-t border-slate-200 my-1"></div>
+                <button
+                  onClick={() => handleDownload('filtered')}
+                  className="w-full px-4 py-2 text-right text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-2"
+                >
+                  <ArrowDownTrayIcon className="w-4 h-4 text-slate-400" />
+                  <div className="flex flex-col items-start">
+                    <span>تصدير النتائج المفلترة</span>
+                    {hasActiveFilters && (
+                      <span className="text-xs text-primary-600">
+                        (مع الفلاتر الحالية)
+                      </span>
+                    )}
+                  </div>
+                </button>
+              </motion.div>
+            )}
+          </div>
         </div>
       </div>
 
